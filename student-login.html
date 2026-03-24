@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Student Login – ChemTest Portal</title>
+  <meta name="description" content="Student login for ChemTest home test submission portal." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="student-login.css" />
+</head>
+<body>
+  <canvas id="bgCanvas"></canvas>
+  <div class="orb orb-1"></div>
+  <div class="orb orb-2"></div>
+  <div class="orb orb-3"></div>
+
+  <a href="staff-login.html" class="top-right-link">
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+    Staff Login
+  </a>
+
+  <div class="login-wrap">
+    <div class="login-card">
+      <div class="login-header">
+        <div class="logo-wrap">
+          <span class="logo-emoji">📚</span>
+          <div class="pulse-ring ring-1"></div>
+          <div class="pulse-ring ring-2"></div>
+        </div>
+        <h1>Student Portal</h1>
+        <p>Login with your register number</p>
+      </div>
+
+      <!-- Name preview strip (shows after valid reg entry) -->
+      <div class="name-preview" id="namePreview" hidden>
+        <span class="name-hi">👋 Hello,</span>
+        <strong id="previewName"></strong>
+      </div>
+
+      <form id="loginForm" novalidate>
+        <div class="form-group">
+          <label for="regNo">Register Number</label>
+          <div class="input-wrap">
+            <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>
+            <input type="text" id="regNo" placeholder="e.g. 927625BAD002" autocomplete="username"
+              autocapitalize="characters" spellcheck="false" required />
+          </div>
+          <span class="err" id="regErr"></span>
+        </div>
+
+        <div class="form-group">
+          <label for="password">
+            Password
+            <span class="hint-text">Default: your register number</span>
+          </label>
+          <div class="input-wrap">
+            <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+            <input type="password" id="password" placeholder="••••••••" autocomplete="current-password" required />
+            <button type="button" class="toggle-pw" id="togglePw" tabindex="-1">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+          <span class="err" id="pwErr"></span>
+        </div>
+
+        <button type="submit" class="login-btn" id="loginBtn">
+          <span class="btn-text">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+            Login
+          </span>
+          <span class="btn-loader" hidden><span class="spinner"></span> Verifying…</span>
+        </button>
+      </form>
+
+      <p class="login-note">🔒 Your data is secure. Only you and your teacher can see your submissions.</p>
+    </div>
+  </div>
+
+  <!-- Change Password Modal (shown on first login) -->
+  <div class="modal-overlay" id="changePwModal">
+    <div class="modal">
+      <div class="modal-icon">🔑</div>
+      <h2>Set Your Password</h2>
+      <p>Welcome! Please create a personal password to secure your account.</p>
+
+      <div class="form-group mt">
+        <label for="newPw">New Password</label>
+        <div class="input-wrap">
+          <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          <input type="password" id="newPw" placeholder="Min. 6 characters" autocomplete="new-password" />
+        </div>
+        <span class="err" id="newPwErr"></span>
+      </div>
+      <div class="form-group">
+        <label for="confirmPw">Confirm Password</label>
+        <div class="input-wrap">
+          <svg class="icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+          <input type="password" id="confirmPw" placeholder="Re-enter new password" autocomplete="new-password" />
+        </div>
+        <span class="err" id="confirmPwErr"></span>
+      </div>
+
+      <div class="pw-strength" id="pwStrength" hidden>
+        <div class="strength-bar">
+          <div class="strength-fill" id="strengthFill"></div>
+        </div>
+        <span id="strengthLabel"></span>
+      </div>
+
+      <button class="login-btn" id="savePwBtn">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="20 6 9 17 4 12"/></svg>
+        Save &amp; Continue
+      </button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+  <script src="students-db.js"></script>
+  <script src="student-login.js"></script>
+</body>
+</html>

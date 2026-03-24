@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Login – ChemTest Portal</title>
+  <meta name="description" content="Login to ChemTest Portal as a Student or Staff member." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Space+Grotesk:wght@500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="login.css" />
+</head>
+<body>
+
+  <!-- Animated background -->
+  <div class="bg-wrap">
+    <div class="bg-blob blob-1"></div>
+    <div class="bg-blob blob-2"></div>
+    <div class="bg-blob blob-3"></div>
+    <canvas id="bgCanvas"></canvas>
+  </div>
+
+  <!-- Login Card -->
+  <div class="page-center">
+    <div class="card">
+
+      <!-- Logo -->
+      <div class="card-logo">
+        <span class="logo-icon">⚗️</span>
+        <div class="logo-text">
+          <strong>ChemTest</strong>
+          <span>Portal</span>
+        </div>
+      </div>
+
+      <p class="card-tagline">Home Test Submission System</p>
+
+      <!-- ── TAB SWITCHER ──────────────────────────────────── -->
+      <div class="tab-switcher" id="tabSwitcher">
+        <button class="tab-btn active" id="tabStudent" data-tab="student">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <path d="M22 10v6M2 10l10-5 10 5-10 5z"/><path d="M6 12v5c3 3 9 3 12 0v-5"/>
+          </svg>
+          Student
+        </button>
+        <button class="tab-btn" id="tabStaff" data-tab="staff">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/>
+          </svg>
+          Staff
+        </button>
+        <div class="tab-slider" id="tabSlider"></div>
+      </div>
+
+      <!-- ── STUDENT PANEL ──────────────────────────────────── -->
+      <div class="panel" id="panelStudent">
+
+
+
+        <form id="studentForm" novalidate autocomplete="off">
+          <div class="field-group">
+            <div class="field-icon" style="background:var(--blue-grad)">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2">
+                <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+              </svg>
+            </div>
+            <input id="sRegNo" type="text" placeholder="Register Number"
+              autocapitalize="characters" spellcheck="false" autocomplete="off" required />
+          </div>
+          <span class="field-err" id="sRegErr"></span>
+
+          <div class="field-group">
+            <div class="field-icon" style="background:var(--blue-grad)">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2">
+                <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+              </svg>
+            </div>
+            <input id="sPw" type="password" placeholder="Password" autocomplete="current-password" required />
+            <button type="button" class="eye-btn" id="sEyeBtn">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+          <span class="field-err" id="sPwErr"></span>
+
+          <p class="login-hint">🔑 Default password: your register number</p>
+
+          <button type="submit" class="login-btn" id="sBtnLogin">
+            <span class="btn-inner">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+              Login as Student
+            </span>
+          </button>
+        </form>
+      </div>
+
+      <!-- ── STAFF PANEL ─────────────────────────────────────── -->
+      <div class="panel hidden" id="panelStaff">
+
+
+        <form id="staffForm" novalidate autocomplete="off">
+          <div class="field-group">
+            <div class="field-icon" style="background:var(--teal-grad)">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2">
+                <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"/><polyline points="22,6 12,13 2,6"/>
+              </svg>
+            </div>
+            <input id="fEmail" type="text" placeholder="Username" autocomplete="username" required />
+          </div>
+          <span class="field-err" id="fEmailErr"></span>
+
+          <div class="field-group">
+            <div class="field-icon" style="background:var(--teal-grad)">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2">
+                <rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/>
+              </svg>
+            </div>
+            <input id="fPw" type="password" placeholder="Password" autocomplete="current-password" required />
+            <button type="button" class="eye-btn" id="fEyeBtn">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+          <span class="field-err" id="fPwErr"></span>
+
+          <button type="submit" class="login-btn staff-btn" id="fBtnLogin">
+            <span class="btn-inner">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><polyline points="10 17 15 12 10 7"/><line x1="15" y1="12" x2="3" y2="12"/></svg>
+              Login as Staff
+            </span>
+          </button>
+        </form>
+      </div>
+
+      <p class="footer-note">🔒 Secure · Restricted to authorised users only</p>
+    </div>
+  </div>
+
+  <!-- Change Password Modal -->
+  <div class="overlay" id="changePwOverlay">
+    <div class="modal">
+      <div class="modal-head">
+        <span class="modal-icon">🔑</span>
+        <h2>Set Your Password</h2>
+        <p>Welcome! Create a personal password to secure your account.</p>
+      </div>
+      <div class="field-group">
+        <div class="field-icon" style="background:var(--blue-grad)">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        </div>
+        <input id="newPw" type="password" placeholder="New password (min. 6 chars)" />
+        <button type="button" class="eye-btn" id="newPwEye">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+      </div>
+      <span class="field-err" id="newPwErr"></span>
+      <div class="pw-bar"><div class="pw-fill" id="pwFill"></div></div>
+      <span class="pw-label" id="pwLabel"></span>
+      <div class="field-group" style="margin-top:14px">
+        <div class="field-icon" style="background:var(--blue-grad)">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        </div>
+        <input id="confirmPw" type="password" placeholder="Confirm new password" />
+        <button type="button" class="eye-btn" id="confirmPwEye">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+        </button>
+      </div>
+      <span class="field-err" id="confirmPwErr"></span>
+      <button class="login-btn" id="savePwBtn" style="margin-top:20px">
+        <span class="btn-inner">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5"><polyline points="20 6 9 17 4 12"/></svg>
+          Save &amp; Continue
+        </span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Toast -->
+  <div class="toast" id="toast"></div>
+
+  <script src="students-db.js"></script>
+  <script src="login.js"></script>
+</body>
+</html>

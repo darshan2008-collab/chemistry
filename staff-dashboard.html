@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Staff Dashboard – ChemTest Portal</title>
+  <meta name="description" content="Staff grading dashboard to manage and mark student chemistry home tests." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=Space+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="staff-dashboard.css" />
+</head>
+<body>
+  <div class="bg-layer">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+  </div>
+
+  <!-- Sidebar -->
+  <aside class="sidebar" id="sidebar">
+    <div class="sidebar-header">
+      <div class="sidebar-logo">⚗️</div>
+      <div class="sidebar-brand">
+        <span>ChemTest</span>
+        <small>Staff Portal</small>
+      </div>
+      <button class="sidebar-close" id="sidebarClose">✕</button>
+    </div>
+
+    <details class="staff-profile-menu">
+      <summary class="staff-profile" style="list-style:none; outline:none; cursor:pointer;" id="staffProfile">
+        <div class="staff-avatar" id="staffAvatar">ST</div>
+        <div class="staff-info" style="flex:1;">
+          <strong id="staffName">Staff</strong>
+          <span id="staffRole">Teacher</span>
+        </div>
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="color:var(--text-muted);"><polyline points="6 9 12 15 18 9"/></svg>
+      </summary>
+      <div class="staff-dropdown" style="padding: 10px;">
+        <button onclick="window.changeOwnPassword()" style="width:100%; border:none; background:transparent; color:var(--text); padding:10px 14px; border-radius:8px; cursor:pointer; font-size:0.875rem; font-weight:600; text-align:left; transition:background 0.2s; display:flex; align-items:center; gap:10px;" onmouseover="this.style.background='rgba(108,99,255,0.15)'; this.style.color='var(--primary-light)';" onmouseout="this.style.background='transparent'; this.style.color='var(--text)';">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 2l-2 2m-7.61 7.61a5.5 5.5 0 1 1-7.778 7.778 5.5 5.5 0 0 1 7.777-7.777zm0 0L15.5 7.5m0 0l3 3L22 7l-3-3m-3.5 3.5L19 4"/></svg>
+          Change Password
+        </button>
+      </div>
+    </details>
+
+    <nav class="sidebar-nav">
+      <a href="#" class="nav-item active" data-tab="dashboard" id="navDashboard">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+        Dashboard
+      </a>
+      <a href="#" class="nav-item" data-tab="tracker" id="navTracker">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 11l3 3L22 4"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"/></svg>
+        Tracker
+      </a>
+      <a href="#" class="nav-item" data-tab="records" id="navRecords">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        Student Records
+      </a>
+    </nav>
+
+    <div class="sidebar-footer">
+      <button class="logout-btn" id="logoutBtn">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+        Logout
+      </button>
+    </div>
+  </aside>
+
+  <!-- Main -->
+  <div class="main-wrap">
+    <!-- Topbar -->
+    <header class="topbar">
+      <button class="menu-btn" id="menuBtn">
+        <span></span><span></span><span></span>
+      </button>
+      <div class="topbar-title" id="topbarTitle">Dashboard</div>
+      <div class="topbar-actions">
+        <button class="icon-btn" id="refreshBtn" title="Refresh">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><polyline points="1 20 1 14 7 14"/><path d="M3.51 9a9 9 0 0 1 14.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0 0 20.49 15"/></svg>
+        </button>
+        <div class="topbar-profile" id="topbarProfile">ST</div>
+      </div>
+    </header>
+
+    <main class="main-content">
+      <!-- ── Dashboard Tab ─────────────────────────────────── -->
+      <section class="tab-panel active" id="tabDashboard">
+        <div class="page-title">
+          <h1>Overview</h1>
+          <p id="dashDate">Today, --</p>
+        </div>
+
+        <div class="stats-grid">
+          <div class="stat-card card-total">
+            <div class="stat-icon">📥</div>
+            <div class="stat-body">
+              <span class="stat-value" id="ds-total">0</span>
+              <span class="stat-label">Total Submissions</span>
+            </div>
+          </div>
+          <div class="stat-card card-pending">
+            <div class="stat-icon">⏳</div>
+            <div class="stat-body">
+              <span class="stat-value" id="ds-pending">0</span>
+              <span class="stat-label">Pending Review</span>
+            </div>
+          </div>
+          <div class="stat-card card-graded">
+            <div class="stat-icon">✅</div>
+            <div class="stat-body">
+              <span class="stat-value" id="ds-graded">0</span>
+              <span class="stat-label">Graded</span>
+            </div>
+          </div>
+          <div class="stat-card card-avg">
+            <div class="stat-icon">📊</div>
+            <div class="stat-body">
+              <span class="stat-value" id="ds-avg">–</span>
+              <span class="stat-label">Avg Score %</span>
+            </div>
+          </div>
+        </div>
+
+      </section>
+
+      <!-- ── Tracker Tab ─────────────────────────────────────── -->
+      <section class="tab-panel" id="tabTracker">
+        <div class="page-title">
+          <h1>Student Submission Tracker</h1>
+          <p>All 63 students ordered by register number</p>
+        </div>
+        <div class="section-header">
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <span class="tracker-pill">Total: <strong id="trackerTotal">63</strong></span>
+            <span class="tracker-pill tp-done">Submitted: <strong id="trackerDone">0</strong></span>
+            <span class="tracker-pill tp-left">Not Yet: <strong id="trackerLeft">63</strong></span>
+          </div>
+          <button class="clear-btn" id="clearDataBtn" title="Archive current tests to start a new one">🗑️ Clear Tracker (New Test)</button>
+        </div>
+        <div class="tracker-header">
+          <div class="t-num">#</div>
+          <div class="t-reg">Reg No.</div>
+          <div class="t-name">Student Name</div>
+          <div class="t-status">Status</div>
+          <div class="t-marks-col">Marks</div>
+          <div class="t-action">Action</div>
+        </div>
+        <div id="studentTrackerList" class="tracker-list"></div>
+      </section>
+
+      <!-- ── Student Records Tab ───────────────────────────── -->
+      <section class="tab-panel" id="tabRecords">
+        <div class="page-title">
+          <h1>Student Test Records</h1>
+          <p>Store and manage multiple test submissions name/register wise</p>
+        </div>
+        <div class="filters-bar" style="margin-bottom:20px;">
+          <div class="search-wrap">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            <input type="text" id="recordSearch" placeholder="Search name or register no..." />
+          </div>
+        </div>
+        <div class="records-container" id="recordsList"></div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Grade Modal -->
+  <div class="modal-overlay" id="gradeModal">
+    <div class="modal grade-modal">
+      <div class="modal-header">
+        <h2>Grade Submission</h2>
+        <button class="modal-x" id="gradeModalClose">✕</button>
+      </div>
+
+      <div class="modal-images" id="modalImages"></div>
+
+      <div class="modal-info-grid" id="modalInfoGrid"></div>
+
+      <div class="grade-form">
+        <div class="grade-row">
+          <div class="form-group">
+            <label for="marksInput">Marks Obtained <span class="req">*</span></label>
+            <input type="number" id="marksInput" min="0" max="200" placeholder="e.g. 85" />
+          </div>
+          <div class="form-group">
+            <label for="totalMarksInput">Total Marks <span class="req">*</span></label>
+            <input type="number" id="totalMarksInput" min="1" max="200" value="100" placeholder="e.g. 100" />
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="statusSelect">Status</label>
+          <select id="statusSelect" class="filter-select full">
+            <option value="pending">Pending</option>
+            <option value="review">Under Review</option>
+            <option value="graded">Graded</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="feedbackInput">Teacher Feedback</label>
+          <textarea id="feedbackInput" rows="4" placeholder="Write detailed feedback for the student…"></textarea>
+        </div>
+
+        <div class="modal-actions">
+          <button class="cancel-btn" id="gradeModalCancel">Cancel</button>
+          <button class="save-btn" id="saveGradeBtn">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><polyline points="17 21 17 13 7 13"/><polyline points="7 3 7 8 15 8"/></svg>
+            Save Grade
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Lightbox -->
+  <div class="lightbox" id="lightbox">
+    <button class="lightbox-close" id="lightboxClose">✕</button>
+    <img id="lightboxImg" src="" alt="Full size answer sheet" />
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast"></div>
+
+  <script src="students-db.js"></script>
+  <script src="staff-dashboard.js"></script>
+</body>
+</html>

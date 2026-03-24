@@ -1,0 +1,112 @@
+// ── Student Database (extracted from register) ────────────────
+// Register Number → Full Name
+const STUDENTS_DB = {
+  // ── BAD Series ──────────────────────────────────────────────
+  "927625BAD002": "ABARNA S",
+  "927625BAD004": "ABISHEAK S",
+  "927625BAD016": "ASWIN B",
+  "927625BAD019": "BATHIRINATH S S",
+  "927625BAD025": "DAKSHA V",
+  "927625BAD026": "DARSHAN K",
+  "927625BAD034": "DHARANIDHARAN B",
+  "927625BAD045": "ELANGO M",
+  "927625BAD050": "GOWSIKAN K",
+  "927625BAD051": "GURU PRIYA P S",
+  "927625BAD053": "HARENISHA M",
+  "927625BAD054": "HARIHARASUDHAN A M",
+  "927625BAD060": "HARRIS BENADICT A",
+  "927625BAD064": "HIBASHINI E",
+  "927625BAD069": "JOSHUA L",
+  "927625BAD073": "KANIKA G",
+  "927625BAD074": "KANISHKA R",
+  "927625BAD077": "KARTHIKEYAN S",
+  "927625BAD078": "KAVIYA P",
+  "927625BAD080": "KEERTHIVASAN S L",
+  "927625BAD085": "KOWSIKA T",
+  "927625BAD086": "LEKA SRI K",
+  "927625BAD087": "LEKAA SREENITHI S",
+  "927625BAD088": "LOKESH S",
+  "927625BAD089": "MADHUMITHA T",
+  "927625BAD092": "MOHAMED NAZEEM M",
+  "927625BAD101": "NARESH V",
+  "927625BAD103": "NETRA M",
+  "927625BAD108": "PARANISRI Y",
+  "927625BAD110": "POOJA S",
+  "927625BAD111": "POOVIZHI S",
+  "927625BAD113": "PRAJITHA T",
+  "927625BAD116": "PRANESH T",
+  "927625BAD117": "PRASANTH V",
+  "927625BAD125": "M RITHIK ROSAN",
+  "927625BAD129": "RUTHRAMOORTHY S B",
+  "927625BAD132": "SAKTHIKA SRI G K",
+  "927625BAD138": "SANJU G",
+  "927625BAD150": "SHYLESH R",
+  "927625BAD162": "SUJIBALA A",
+  "927625BAD164": "SUWETHA M",
+  "927625BAD166": "SWATHIKA S",
+  "927625BAD171": "THIROSHIKA A M",
+  "927625BAD172": "UDHAYAKRISHNAN R",
+  "927625BAD176": "VENKATNATHAN M",
+  "927625BAD178": "VIGNESH K",
+  "927625BAD185": "VYSHNAVI M",
+  // ── BAM Series ──────────────────────────────────────────────
+  "927625BAM003": "AJEYHARSAN P",
+  "927625BAM004": "AKSHAYA LAKSHMI C",
+  "927625BAM005": "ANBARASU S",
+  "927625BAM007": "BALAJI K",
+  "927625BAM009": "GODIKA M",
+  "927625BAM013": "HARSHAN T V",
+  "927625BAM017": "KRISHNA KUMAR P V",
+  "927625BAM019": "LOHITH M",
+  "927625BAM029": "PRAVIN KUMAR SURESH KUMAR",
+  "927625BAM046": "SHRI HARINI A",
+  "927625BAM050": "SRI NITHI T",
+  "927625BAM052": "SUDHARSAN N S",
+  "927625BAM058": "THANYA G",
+  "927625BAM061": "VIKRAM S",
+  "927625BAM063": "YUVAHARSHINI E",
+};
+
+// ── Password helpers (localStorage) ──────────────────────────
+const PW_KEY = 'chemtest_student_pw';
+const CHANGED_KEY = 'chemtest_pw_changed';
+
+function getPasswords() {
+  try { return JSON.parse(localStorage.getItem(PW_KEY)) || {}; }
+  catch { return {}; }
+}
+function savePasswords(obj) { localStorage.setItem(PW_KEY, JSON.stringify(obj)); }
+
+function getStudentPassword(regNo) {
+  const pws = getPasswords();
+  return pws[regNo] || regNo; // default password = register number
+}
+function setStudentPassword(regNo, newPw) {
+  const pws = getPasswords();
+  pws[regNo] = newPw;
+  savePasswords(pws);
+}
+function hasChangedPassword(regNo) {
+  try { return !!(JSON.parse(localStorage.getItem(CHANGED_KEY)) || {})[regNo]; }
+  catch { return false; }
+}
+function markPasswordChanged(regNo) {
+  const obj = JSON.parse(localStorage.getItem(CHANGED_KEY) || '{}');
+  obj[regNo] = true;
+  localStorage.setItem(CHANGED_KEY, JSON.stringify(obj));
+}
+
+// ── Session helpers ───────────────────────────────────────────
+function getStudentSession() {
+  try { return JSON.parse(sessionStorage.getItem('chemtest_student') || 'null'); }
+  catch { return null; }
+}
+function setStudentSession(regNo) {
+  sessionStorage.setItem('chemtest_student', JSON.stringify({
+    regNo, name: STUDENTS_DB[regNo], loggedInAt: new Date().toISOString()
+  }));
+}
+function clearStudentSession() { sessionStorage.removeItem('chemtest_student'); }
+function requireStudentAuth() {
+  if (!getStudentSession()) { window.location.href = 'login.html'; }
+}
