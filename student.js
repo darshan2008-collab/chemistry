@@ -167,10 +167,8 @@ async function handleSubmit(e) {
   if (btn) btn.disabled = true;
 
   try {
-    // Convert images to base64 (all files, not just images)
-    const imageData = await Promise.all(
-      selectedFiles.slice(0, 20).map(f => fileToBase64(f).catch(() => null))
-    ).then(arr => arr.filter(Boolean));
+    // Upload files to backend and store persistent URLs
+    const imageData = await uploadFiles(selectedFiles.slice(0, 20));
 
     const submission = {
       id: generateId(),
@@ -276,3 +274,21 @@ function showToast(msg, type='info') {
 function generateId() { return 'CT-'+Date.now().toString(36).toUpperCase()+'-'+Math.random().toString(36).slice(2,5).toUpperCase(); }
 function fileToBase64(file) { return new Promise(r=>{const rd=new FileReader(); rd.onload=e=>r(e.target.result); rd.readAsDataURL(file);}); }
 function escapeHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+async function uploadFiles(files) {
+  const form = new FormData();
+  files.forEach(f => form.append('files', f));
+
+  const res = await fetch('/api/upload', {
+    method: 'POST',
+    body: form,
+  });
+
+  if (!res.ok) {
+    const msg = await res.text().catch(() => 'Upload failed');
+    throw new Error(msg || 'Upload failed');
+  }
+
+  const payload = await res.json();
+  return (payload.files || []).map(f => f.url);
+}
