@@ -59,6 +59,7 @@ services:
     working_dir: /app
     command: >
       sh -c "
+      test -f /app/package.json || (echo 'ERROR: /app/package.json not found. Check PROJECT_ROOT and bind mount for ${PROJECT_ROOT}/api -> /app.' && exit 1) &&
       npm install --omit=dev &&
       npm start
       "

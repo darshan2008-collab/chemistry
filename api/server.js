@@ -10,12 +10,30 @@ const uploadDir = process.env.UPLOAD_DIR || '/data/uploads';
 const studentsFile = process.env.STUDENTS_FILE || '/app/students-db.js';
 const resyncToken = process.env.RESYNC_TOKEN || '';
 
+function requireEnv(name) {
+  const value = process.env[name];
+  if (!value || !String(value).trim()) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+  return value;
+}
+
+const dbHost = requireEnv('DB_HOST');
+const dbPort = Number(requireEnv('DB_PORT'));
+const dbName = requireEnv('DB_NAME');
+const dbUser = requireEnv('DB_USER');
+const dbPassword = requireEnv('DB_PASSWORD');
+
+if (!Number.isFinite(dbPort) || dbPort <= 0) {
+  throw new Error('Invalid DB_PORT. It must be a positive number.');
+}
+
 const pool = new Pool({
-  host: process.env.DB_HOST || 'chemtest-db',
-  port: Number(process.env.DB_PORT || 5432),
-  database: process.env.DB_NAME || 'chemistry',
-  user: process.env.DB_USER || 'chemistry_user',
-  password: process.env.DB_PASSWORD || 'change_me',
+  host: dbHost,
+  port: dbPort,
+  database: dbName,
+  user: dbUser,
+  password: dbPassword,
   max: 10,
 });
 
