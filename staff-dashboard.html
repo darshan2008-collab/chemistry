@@ -135,6 +135,13 @@
             <span class="tracker-pill tp-done">Submitted: <strong id="trackerDone">0</strong></span>
             <span class="tracker-pill tp-left">Not Yet: <strong id="trackerLeft">63</strong></span>
           </div>
+          <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+            <select id="trackerClassFilter" class="filter-select" title="Filter by class section">
+              <option value="all">All Classes</option>
+              <option value="A7">A7</option>
+              <option value="A3">A3</option>
+            </select>
+          </div>
           <button class="clear-btn" id="clearDataBtn" title="Archive current tests to start a new one">🗑️ Clear Tracker (New Test)</button>
         </div>
         <div class="tracker-header">
@@ -159,6 +166,11 @@
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
             <input type="text" id="recordSearch" placeholder="Search name or register no..." />
           </div>
+          <select id="recordClassFilter" class="filter-select" title="Filter by class section">
+            <option value="all">All Classes</option>
+            <option value="A7">A7</option>
+            <option value="A3">A3</option>
+          </select>
         </div>
         <div class="records-container" id="recordsList"></div>
       </section>

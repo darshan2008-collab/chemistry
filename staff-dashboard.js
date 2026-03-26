@@ -10,6 +10,11 @@ function getStaffAuthHeaders() {
 
 let submissionsCache = [];
 const getSubmissions = () => submissionsCache;
+let trackerClassFilter = 'all';
+let recordClassFilter = 'all';
+
+const A7_PREFIXES = new Set(['BAD', 'BAM']);
+const A3_PREFIXES = new Set(['BCS', 'BIT', 'BSC']);
 
 async function apiFetchSubmissions() {
   const res = await fetch('/api/submissions?includeArchived=true', {
@@ -158,6 +163,34 @@ function initTabs() {
   // Search
   const sea = document.getElementById('recordSearch');
   if (sea) sea.addEventListener('input', renderRecords);
+
+  const trackerFilter = document.getElementById('trackerClassFilter');
+  if (trackerFilter) {
+    trackerFilter.addEventListener('change', () => {
+      trackerClassFilter = trackerFilter.value;
+      renderStudentTracker();
+    });
+  }
+
+  const recordFilter = document.getElementById('recordClassFilter');
+  if (recordFilter) {
+    recordFilter.addEventListener('change', () => {
+      recordClassFilter = recordFilter.value;
+      renderRecords();
+    });
+  }
+}
+
+function getSectionFromRegNo(regNo) {
+  const prefix = String(regNo || '').slice(6, 9).toUpperCase();
+  if (A7_PREFIXES.has(prefix)) return 'A7';
+  if (A3_PREFIXES.has(prefix)) return 'A3';
+  return 'other';
+}
+
+function matchesSectionFilter(regNo, sectionFilter) {
+  if (sectionFilter === 'all') return true;
+  return getSectionFromRegNo(regNo) === sectionFilter;
 }
 
 function switchTab(tab) {
@@ -208,7 +241,9 @@ function renderStudentTracker() {
   const subMap = {};
   submissions.forEach(s => { subMap[s.rollNumber] = s; });
 
-  const regNos = Object.keys(STUDENTS_DB).sort();
+  const regNos = Object.keys(STUDENTS_DB)
+    .filter(regNo => matchesSectionFilter(regNo, trackerClassFilter))
+    .sort();
   const submitted   = regNos.filter(r => subMap[r]).length;
   const notYet      = regNos.length - submitted;
 
@@ -268,7 +303,9 @@ function renderRecords() {
 
   const q = (document.getElementById('recordSearch')?.value || '').toLowerCase();
 
-  const regNos = Object.keys(STUDENTS_DB).sort();
+  const regNos = Object.keys(STUDENTS_DB)
+    .filter(regNo => matchesSectionFilter(regNo, recordClassFilter))
+    .sort();
   el.innerHTML = '';
 
   let count = 0;
