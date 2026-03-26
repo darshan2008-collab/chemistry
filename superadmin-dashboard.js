@@ -1,57 +1,11 @@
 (() => {
-    const REDIRECT_DEBUG_ENABLED = true;
-    let redirectDebugPanel = null;
-
-    function initRedirectDebugPanel() {
-        if (!REDIRECT_DEBUG_ENABLED || redirectDebugPanel) return;
-        redirectDebugPanel = document.createElement('div');
-        redirectDebugPanel.style.cssText = [
-            'position:fixed',
-            'right:10px',
-            'bottom:10px',
-            'z-index:99999',
-            'width:min(460px,92vw)',
-            'max-height:42vh',
-            'overflow:auto',
-            'padding:10px',
-            'border-radius:10px',
-            'background:rgba(8,12,24,0.92)',
-            'border:1px solid rgba(120,190,255,0.45)',
-            'font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace',
-            'color:#d8ecff'
-        ].join(';');
-        const header = document.createElement('div');
-        header.textContent = 'Redirect Trace (superadmin-dashboard.js)';
-        header.style.cssText = 'font-weight:700;margin-bottom:8px;color:#7fd0ff';
-        redirectDebugPanel.appendChild(header);
-        (document.body || document.documentElement).appendChild(redirectDebugPanel);
-    }
-
-    function redirectTrace(message) {
-        if (!REDIRECT_DEBUG_ENABLED) return;
-        initRedirectDebugPanel();
-        const line = document.createElement('div');
-        const stamp = new Date().toISOString().slice(11, 23);
-        line.textContent = `[${stamp}] ${message}`;
-        line.style.cssText = 'padding:2px 0;border-top:1px dashed rgba(180,220,255,0.18)';
-        redirectDebugPanel.appendChild(line);
-        while (redirectDebugPanel.childElementCount > 22) {
-            redirectDebugPanel.removeChild(redirectDebugPanel.children[1]);
-        }
-        console.log('[RedirectTrace][superadmin-dashboard.js]', message);
-    }
-
-    redirectTrace('Super admin dashboard script initialized');
-
     function getSuperAdminSession() {
         try { return JSON.parse(sessionStorage.getItem('chemtest_superadmin') || 'null'); }
         catch { return null; }
     }
 
     const session = getSuperAdminSession();
-    redirectTrace(`Session check -> token present: ${!!session?.token}`);
     if (!session?.token) {
-        redirectTrace('No token found, redirecting to login.html');
         window.location.replace('login.html');
         return;
     }
@@ -77,10 +31,8 @@
     async function refreshStaff() {
         const list = document.getElementById('staffList');
         list.innerHTML = 'Loading...';
-        redirectTrace('Fetching /api/admin/staff for dashboard list');
         try {
             const res = await fetch('/api/admin/staff', { headers: authHeaders() });
-            redirectTrace(`Dashboard /api/admin/staff HTTP ${res.status}`);
             if (!res.ok) throw new Error('Failed');
             const payload = await res.json();
             const staff = payload.staff || [];
@@ -97,7 +49,6 @@
                 </div>
             `).join('');
         } catch (_err) {
-            redirectTrace('Failed to load staff list');
             list.innerHTML = '<div class="list-item"><div class="meta" style="color:#ffb8c7">Failed to load staff list.</div></div>';
         }
     }
@@ -190,7 +141,6 @@
     document.getElementById('refreshBtn').addEventListener('click', refreshStaff);
 
     document.getElementById('logoutBtn').addEventListener('click', () => {
-        redirectTrace('Logout clicked -> clearing sessions and going login.html');
         sessionStorage.removeItem('chemtest_superadmin');
         sessionStorage.removeItem('chemtest_staff');
         window.location.replace('login.html');
