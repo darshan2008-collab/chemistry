@@ -1,62 +1,76 @@
 # Portainer Deployment Guide
 
-Use this for TrueNAS + Portainer deployments.
+Use this for TrueNAS + Portainer with Git-based stack deployment.
 
-## 1) Required paths on TrueNAS
+## 1) How this deployment now works
 
-Make sure the project exists at one Linux path, for example:
+1. App code is built directly from your Git repo by Docker.
+2. Student uploads are persisted to host path using `UPLOADS_ROOT`.
+3. No host bind mount is used for `/app` code, so `/app/package.json` mount errors are avoided.
 
-- /mnt/tank/apps/chemistry
+## 2) Required repository files
 
-The folder must contain:
+Your Git repo must contain:
 
-- /mnt/tank/apps/chemistry/api/package.json
-- /mnt/tank/apps/chemistry/api/server.js
-- /mnt/tank/apps/chemistry/api/Dockerfile
-- /mnt/tank/apps/chemistry/nginx/default.conf
-- /mnt/tank/apps/chemistry/students-db.js
+- `api/package.json`
+- `api/server.js`
+- `api/Dockerfile`
+- `nginx/default.conf`
+- `nginx/Dockerfile`
+- frontend `*.html`, `*.css`, `*.js`
+- `students-db.js`
 
-## 2) Stack environment variables
+## 3) Stack environment variables
 
 Set these in Portainer stack variables:
 
-- PROJECT_ROOT=/mnt/tank/apps/chemistry
-- APP_PORT=10004
-- APP_ENV=production
-- TZ=Asia/Kolkata
-- API_PORT=3000
-- RETENTION_DAYS=90
-- CLEANUP_SCHEDULE=30 2 * * *
-- DB_HOST=<external-db-host-or-ip>
-- DB_PORT=5432
-- DB_NAME=<db-name>
-- DB_USER=<db-user>
-- DB_PASSWORD=<db-password>
-- RESYNC_TOKEN=<long-random-token>
-- STACK_NETWORK=chemistry-stack-net
+- `UPLOADS_ROOT=/mnt/tank/apps/chemistry-data/uploads`
+- `APP_PORT=10004`
+- `APP_ENV=production`
+- `TZ=Asia/Kolkata`
+- `API_PORT=3000`
+- `RETENTION_DAYS=90`
+- `CLEANUP_SCHEDULE=30 2 * * *`
+- `DB_HOST=<external-db-host-or-ip>`
+- `DB_PORT=5432`
+- `DB_NAME=<db-name>`
+- `DB_USER=<db-user>`
+- `DB_PASSWORD=<db-password>`
+- `RESYNC_TOKEN=<long-random-token>`
+- `STACK_NETWORK=chemistry-stack-net`
 
-Do not use Windows paths like c:/Users/... for PROJECT_ROOT.
-
-## 3) Redeploy cleanly
-
-After changing variables, recreate containers:
-
-1. Update stack in Portainer with recreate option.
-2. If needed, remove old containers and redeploy stack.
-3. Ensure Build image is enabled for stack update so chemtest-api is rebuilt.
-
-## 4) Quick verification
-
-Run these on the Docker host:
+Create uploads path on host first:
 
 ```sh
-docker inspect chemtest-api --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}'
-docker exec -it chemtest-api sh -lc 'ls -la /app; ls -la /app/package.json; ls -la /app/server.js'
+mkdir -p /mnt/tank/apps/chemistry-data/uploads
+```
+
+## 4) Deploy steps in Portainer
+
+1. Use Stack from Git repository.
+2. Enable build/rebuild when updating the stack.
+3. Deploy with recreate.
+
+## 5) Optional internal DB mode
+
+`chemtest-db` is under profile `internal-db`.
+
+- External DB (recommended): default deployment, no profile needed.
+- Internal DB: deploy with compose profile `internal-db` and set `DB_HOST=chemtest-db`.
+
+## 6) Quick verification
+
+Run these on Docker host:
+
+```sh
+docker compose ps
 docker logs --tail 100 chemtest-api
+docker logs --tail 100 chemtest-web
 ```
 
 Expected result:
 
-- /app/package.json exists inside chemtest-api container.
-- API starts without npm ENOENT.
+- `chemtest-api` healthy and listening on 3000
+- `chemtest-web` healthy
+- uploads written to `${UPLOADS_ROOT}`
 

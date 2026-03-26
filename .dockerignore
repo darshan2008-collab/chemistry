@@ -1,0 +1,6 @@
+.git
+.gitignore
+.env
+.env.*
+data
+api/node_modules

@@ -86,6 +86,44 @@ function initParticles() {
 
 // ── Drop Zone ─────────────────────────────────────────────────
 let selectedFiles = [];
+let uploadStartTimeMs = 0;
+
+function setUploadProgress(percent, speedLabel) {
+  const bar = document.getElementById('uploadProgress');
+  const fill = document.getElementById('uploadProgressFill');
+  const percentEl = document.getElementById('uploadPercentLabel');
+  const speedEl = document.getElementById('uploadSpeedLabel');
+  if (!bar || !fill || !percentEl || !speedEl) return;
+
+  const safePercent = Math.max(0, Math.min(100, Math.round(percent || 0)));
+  fill.style.width = `${safePercent}%`;
+  percentEl.textContent = `${safePercent}%`;
+  speedEl.textContent = speedLabel || '0 KB/s';
+}
+
+function showUploadProgress() {
+  const bar = document.getElementById('uploadProgress');
+  if (!bar) return;
+  bar.classList.add('active');
+  bar.setAttribute('aria-hidden', 'false');
+  uploadStartTimeMs = Date.now();
+  setUploadProgress(0, '0 KB/s');
+}
+
+function hideUploadProgress() {
+  const bar = document.getElementById('uploadProgress');
+  if (!bar) return;
+  bar.classList.remove('active');
+  bar.setAttribute('aria-hidden', 'true');
+}
+
+function formatUploadSpeed(bytesPerSecond) {
+  if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return '0 KB/s';
+  const kbps = bytesPerSecond / 1024;
+  if (kbps < 1024) return `${kbps.toFixed(kbps >= 100 ? 0 : 1)} KB/s`;
+  const mbps = kbps / 1024;
+  return `${mbps.toFixed(mbps >= 10 ? 1 : 2)} MB/s`;
+}
 
 function initDropZone() {
   const zone  = document.getElementById('dropZone');
@@ -165,10 +203,17 @@ async function handleSubmit(e) {
   // Disable button to prevent double-submit
   const btn = document.getElementById('submitBtn');
   if (btn) btn.disabled = true;
+  showUploadProgress();
 
   try {
     // Upload files to backend and store persistent URLs
-    const imageData = await uploadFiles(selectedFiles.slice(0, 20));
+    const imageData = await uploadFiles(selectedFiles.slice(0, 20), (loaded, total) => {
+      const elapsedSec = Math.max((Date.now() - uploadStartTimeMs) / 1000, 0.001);
+      const percent = total > 0 ? (loaded / total) * 100 : 0;
+      const speed = formatUploadSpeed(loaded / elapsedSec);
+      setUploadProgress(percent, speed);
+    });
+    setUploadProgress(100, 'Done');
 
     const submission = {
       id: generateId(),
@@ -200,9 +245,11 @@ async function handleSubmit(e) {
     loadMyResults();
 
   } catch (err) {
+    hideUploadProgress();
     showToast('❌ Submission failed. Try again.', 'error');
     console.error('Submit error:', err);
   } finally {
+    setTimeout(hideUploadProgress, 800);
     if (btn) btn.disabled = false;
   }
 }
@@ -275,20 +322,32 @@ function generateId() { return 'CT-'+Date.now().toString(36).toUpperCase()+'-'+M
 function fileToBase64(file) { return new Promise(r=>{const rd=new FileReader(); rd.onload=e=>r(e.target.result); rd.readAsDataURL(file);}); }
 function escapeHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
-async function uploadFiles(files) {
+function uploadFiles(files, onProgress) {
   const form = new FormData();
   files.forEach(f => form.append('files', f));
 
-  const res = await fetch('/api/upload', {
-    method: 'POST',
-    body: form,
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/upload', true);
+
+    xhr.upload.onprogress = (event) => {
+      if (!event.lengthComputable || typeof onProgress !== 'function') return;
+      onProgress(event.loaded, event.total);
+    };
+
+    xhr.onerror = () => reject(new Error('Upload failed'));
+    xhr.onload = () => {
+      if (xhr.status < 200 || xhr.status >= 300) {
+        return reject(new Error(xhr.responseText || 'Upload failed'));
+      }
+      try {
+        const payload = JSON.parse(xhr.responseText || '{}');
+        resolve((payload.files || []).map(f => f.url));
+      } catch (_err) {
+        reject(new Error('Invalid upload response'));
+      }
+    };
+
+    xhr.send(form);
   });
-
-  if (!res.ok) {
-    const msg = await res.text().catch(() => 'Upload failed');
-    throw new Error(msg || 'Upload failed');
-  }
-
-  const payload = await res.json();
-  return (payload.files || []).map(f => f.url);
 }
