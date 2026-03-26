@@ -48,7 +48,10 @@ services:
       - chemistry-net
 
   chemtest-api:
-    image: node:20-alpine
+    image: chemtest-api:local
+    build:
+      context: ${PROJECT_ROOT}/api
+      dockerfile: Dockerfile
     container_name: chemtest-api
     restart: unless-stopped
     depends_on:
@@ -56,18 +59,11 @@ services:
         condition: service_healthy
       chemtest-db:
         condition: service_healthy
-    working_dir: /app
-    command: >
-      sh -c "
-      test -f /app/package.json || (echo 'ERROR: /app/package.json not found. Check PROJECT_ROOT and bind mount for ${PROJECT_ROOT}/api -> /app.' && exit 1) &&
-      npm install --omit=dev &&
-      npm start
-      "
     environment:
       TZ: ${TZ}
       API_PORT: ${API_PORT}
       UPLOAD_DIR: /data/uploads
-      STUDENTS_FILE: /app/students-db.js
+      STUDENTS_FILE: /data/students-db.js
       RESYNC_TOKEN: ${RESYNC_TOKEN}
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
@@ -76,11 +72,8 @@ services:
       DB_PASSWORD: ${DB_PASSWORD}
     volumes:
       - type: bind
-        source: ${PROJECT_ROOT}/api
-        target: /app
-      - type: bind
         source: ${PROJECT_ROOT}/students-db.js
-        target: /app/students-db.js
+        target: /data/students-db.js
         read_only: true
       - type: bind
         source: ${PROJECT_ROOT}/data/uploads
