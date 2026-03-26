@@ -20,14 +20,14 @@ function initBg() {
   let W, H, pts = [];
   function resize() { W = canvas.width = innerWidth; H = canvas.height = innerHeight; }
   resize(); window.addEventListener('resize', resize);
-  for (let i = 0; i < 50; i++) pts.push({ x: Math.random()*1920, y: Math.random()*1080, vx: (Math.random()-.5)*.3, vy: (Math.random()-.5)*.3, r: Math.random()*1.4+.3, a: Math.random()*.5+.1 });
+  for (let i = 0; i < 50; i++) pts.push({ x: Math.random() * 1920, y: Math.random() * 1080, vx: (Math.random() - .5) * .3, vy: (Math.random() - .5) * .3, r: Math.random() * 1.4 + .3, a: Math.random() * .5 + .1 });
   (function draw() {
-    ctx.clearRect(0,0,W,H);
+    ctx.clearRect(0, 0, W, H);
     pts.forEach(p => {
-      p.x+=p.vx; p.y+=p.vy;
-      if(p.x<0)p.x=W; if(p.x>W)p.x=0; if(p.y<0)p.y=H; if(p.y>H)p.y=0;
-      ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2);
-      ctx.fillStyle=`rgba(124,58,237,${p.a})`; ctx.fill();
+      p.x += p.vx; p.y += p.vy;
+      if (p.x < 0) p.x = W; if (p.x > W) p.x = 0; if (p.y < 0) p.y = H; if (p.y > H) p.y = 0;
+      ctx.beginPath(); ctx.arc(p.x, p.y, p.r, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(124,58,237,${p.a})`; ctx.fill();
     }); requestAnimationFrame(draw);
   })();
 }
@@ -66,7 +66,7 @@ function initForm() {
   document.getElementById('loginForm').addEventListener('submit', async e => {
     e.preventDefault();
     const regNo = document.getElementById('regNo').value.trim().toUpperCase();
-    const pw    = document.getElementById('password').value;
+    const pw = document.getElementById('password').value;
 
     // Validate register number
     if (!STUDENTS_DB[regNo]) {
@@ -96,17 +96,26 @@ function initForm() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ regNo, password: pw }),
       });
-      if (!res.ok) throw new Error('Invalid credentials');
+      if (!res.ok) {
+        let msg = 'Invalid credentials';
+        try {
+          const errPayload = await res.json();
+          msg = errPayload?.error || msg;
+        } catch (_e) {
+          // Ignore parse errors and keep fallback message
+        }
+        throw new Error(msg);
+      }
       payload = await res.json();
-    } catch (_err) {
-      document.getElementById('pwErr').textContent = 'Incorrect password';
+    } catch (err) {
+      document.getElementById('pwErr').textContent = err?.message || 'Incorrect password';
       const card = document.querySelector('.login-card');
       card.classList.remove('shake');
       void card.offsetWidth; // trigger reflow
       card.classList.add('shake');
       if (window.navigator.vibrate) window.navigator.vibrate(200);
       document.getElementById('password').classList.add('err-border');
-      showToast('❌ Incorrect password', 'error');
+      showToast(`❌ ${err?.message || 'Incorrect password'}`, 'error');
       return;
     } finally {
       stopLoginAnimation();
@@ -227,7 +236,7 @@ async function saveNewPassword() {
 
 // ── Toast ─────────────────────────────────────────────────────
 let _t;
-function showToast(msg, type='info') {
+function showToast(msg, type = 'info') {
   const el = document.getElementById('toast');
   el.textContent = msg; el.className = `toast ${type} show`;
   clearTimeout(_t); _t = setTimeout(() => el.classList.remove('show'), 3500);

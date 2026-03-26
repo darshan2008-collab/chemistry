@@ -1,14 +1,13 @@
 // ── Reidrect if already logged in ─────────────────────────────
-if (getStudentSession())                                       window.location.replace('index.html');
-if (getStaffSession())                                         window.location.replace('staff-dashboard.html');
+if (getStudentSession()) window.location.replace('index.html');
+if (getStaffSession()) window.location.replace('staff-dashboard.html');
+if (getSuperAdminSession()) window.location.replace('superadmin-dashboard.html');
 
 // ── Init ──────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
   runIntroAnimation();
   initBg();
-  initTabs();
-  initStudentForm();
-  initStaffForm();
+  initUnifiedForm();
   initChangePwModal();
   initEyeBtns();
   initCardMotion();
@@ -17,10 +16,12 @@ document.addEventListener('DOMContentLoaded', () => {
 function runIntroAnimation() {
   const fx = document.getElementById('introFx');
   if (!fx) return;
+  const isMobile = window.matchMedia('(max-width: 480px)').matches;
+  const durationMs = isMobile ? 700 : 1050;
   fx.classList.add('show');
   setTimeout(() => {
     fx.classList.remove('show');
-  }, 1900);
+  }, durationMs);
 }
 
 function initCardMotion() {
@@ -71,103 +72,75 @@ function initBg() {
   })();
 }
 
-// ── Tab switching ─────────────────────────────────────────────
-let activeTab = 'student';
-
-function initTabs() {
-  document.getElementById('tabStudent').addEventListener('click', () => switchTab('student'));
-  document.getElementById('tabStaff').addEventListener('click',   () => switchTab('staff'));
-}
-
-function switchTab(tab) {
-  activeTab = tab;
-  const slider  = document.getElementById('tabSlider');
-  const btnS    = document.getElementById('tabStudent');
-  const btnF    = document.getElementById('tabStaff');
-  const panS    = document.getElementById('panelStudent');
-  const panF    = document.getElementById('panelStaff');
-
-  if (tab === 'student') {
-    slider.classList.remove('right');
-    btnS.classList.add('active');    btnF.classList.remove('active');
-    panS.classList.remove('hidden'); panF.classList.add('hidden');
-  } else {
-    slider.classList.add('right');
-    btnF.classList.add('active');    btnS.classList.remove('active');
-    panF.classList.remove('hidden'); panS.classList.add('hidden');
-  }
-  // Re-trigger panel animation
-  const panel = tab === 'student' ? panS : panF;
-  panel.style.animation = 'none';
-  requestAnimationFrame(() => { panel.style.animation = ''; });
-}
-
 // ── Student form ──────────────────────────────────────────────
 let pendingRegNo = null;
 let pendingStudentToken = '';
 let pendingStudentName = '';
 
-function initStudentForm() {
-  // Auto-uppercase register number as user types
-  const regInput = document.getElementById('sRegNo');
-  regInput.addEventListener('input', () => {
-    const pos = regInput.selectionStart;
-    regInput.value = regInput.value.toUpperCase();
-    regInput.setSelectionRange(pos, pos);
+function initUnifiedForm() {
+  const idInput = document.getElementById('loginId');
+  const pwInput = document.getElementById('loginPw');
+  const idErr = document.getElementById('loginIdErr');
+  const pwErr = document.getElementById('loginPwErr');
+
+  idInput.addEventListener('input', () => {
+    idErr.textContent = '';
   });
 
-  document.getElementById('studentForm').addEventListener('submit', async e => {
-    e.preventDefault();
-    const regNo = document.getElementById('sRegNo').value.trim().toUpperCase();
-    const pw    = document.getElementById('sPw').value;
+  pwInput.addEventListener('input', () => {
+    pwErr.textContent = '';
+  });
 
-    if (!STUDENTS_DB[regNo]) {
-      document.getElementById('sRegErr').textContent = 'Register number not found';
+  document.getElementById('unifiedLoginForm').addEventListener('submit', async e => {
+    e.preventDefault();
+    const rawId = document.getElementById('loginId').value.trim();
+    const pw = document.getElementById('loginPw').value;
+
+    if (!rawId) {
+      idErr.textContent = 'Enter register number or email';
       return;
     }
-    document.getElementById('sRegErr').textContent = '';
-    if (!pw) { document.getElementById('sPwErr').textContent = 'Enter your password'; return; }
+    if (!pw) {
+      pwErr.textContent = 'Enter your password';
+      return;
+    }
 
+    const regCandidate = rawId.toUpperCase();
+    const isStudent = !!STUDENTS_DB[regCandidate];
 
     try {
-      const payload = await apiStudentLogin(regNo, pw);
-      document.getElementById('sPwErr').textContent = '';
+      if (isStudent) {
+        const payload = await apiStudentLogin(regCandidate, pw);
 
-      if (payload.mustChangePassword) {
-        pendingRegNo = regNo;
-        pendingStudentToken = payload.token;
-        pendingStudentName = payload?.student?.name || STUDENTS_DB[regNo] || '';
-        document.getElementById('changePwOverlay').classList.add('show');
-        document.body.style.overflow = 'hidden';
+        if (payload.mustChangePassword) {
+          pendingRegNo = regCandidate;
+          pendingStudentToken = payload.token;
+          pendingStudentName = payload?.student?.name || STUDENTS_DB[regCandidate] || '';
+          document.getElementById('changePwOverlay').classList.add('show');
+          document.body.style.overflow = 'hidden';
+          return;
+        }
+
+        setStudentSession(regCandidate, payload.token, payload?.student?.name || STUDENTS_DB[regCandidate]);
+        showToast('👋 Welcome, ' + (payload?.student?.name || STUDENTS_DB[regCandidate]) + '!', 'ok top');
+        setTimeout(() => window.location.href = 'index.html', 700);
         return;
       }
 
-      setStudentSession(regNo, payload.token, payload?.student?.name || STUDENTS_DB[regNo]);
-      showToast('✅ Welcome, ' + (payload?.student?.name || STUDENTS_DB[regNo]) + '!', 'ok');
-      setTimeout(() => window.location.href = 'index.html', 700);
-    } catch (_err) {
-      document.getElementById('sPwErr').textContent = 'Incorrect password';
-      showToast('❌ Wrong password', 'bad');
-    }
-  });
-}
+      const payload = await apiStaffLogin(rawId.toLowerCase(), pw);
+      const role = String(payload?.staff?.role || '').toLowerCase();
 
-// ── Staff form ────────────────────────────────────────────────
-function initStaffForm() {
-  document.getElementById('staffForm').addEventListener('submit', async e => {
-    e.preventDefault();
-    const username = document.getElementById('fEmail').value.trim().toLowerCase();
-    const pw       = document.getElementById('fPw').value;
-
-    if (!username) {
-      document.getElementById('fEmailErr').textContent = 'Enter your username'; return;
-    }
-    if (!pw) { document.getElementById('fPwErr').textContent = 'Enter your password'; return; }
-
-    try {
-      const payload = await apiStaffLogin(username, pw);
-      document.getElementById('fEmailErr').textContent = '';
-      document.getElementById('fPwErr').textContent = '';
+      if (/super\s*admin/.test(role) || role === 'superadmin') {
+        setSuperAdminSession({
+          email: payload.staff.email,
+          name: payload.staff.name,
+          role: payload.staff.role,
+          token: payload.token,
+        });
+        showToast('👑 Welcome Super Admin!', 'ok top');
+        setTimeout(() => window.location.href = 'superadmin-dashboard.html', 700);
+        return;
+      }
 
       setStaffSession({
         email: payload.staff.email,
@@ -175,10 +148,10 @@ function initStaffForm() {
         role: payload.staff.role,
         token: payload.token,
       });
-      showToast('✅ Welcome, ' + payload.staff.name + '!', 'ok');
+      showToast('👋 Welcome, ' + payload.staff.name + '!', 'ok top');
       setTimeout(() => window.location.href = 'staff-dashboard.html', 700);
     } catch (_err) {
-      document.getElementById('fPwErr').textContent = 'Invalid credentials';
+      pwErr.textContent = 'Invalid credentials';
       showToast('❌ Invalid username or password', 'bad');
     }
   });
@@ -196,7 +169,7 @@ function initChangePwModal() {
       { w: '25%', bg: '#ff5777', txt: 'Weak', col: '#ff5777' },
       { w: '50%', bg: '#ff9900', txt: 'Fair', col: '#ff9900' },
       { w: '75%', bg: '#eab308', txt: 'Good', col: '#eab308' },
-      { w: '100%',bg: '#00b894', txt: 'Strong 💪', col: '#00b894' },
+      { w: '100%', bg: '#00b894', txt: 'Strong 💪', col: '#00b894' },
     ][s];
     fill.style.width = cfg.w; fill.style.background = cfg.bg;
     label.textContent = cfg.txt; label.style.color = cfg.col;
@@ -209,8 +182,8 @@ function initChangePwModal() {
     document.getElementById('confirmPwErr').textContent = '';
 
     if (!np || np.length < 6) { document.getElementById('newPwErr').textContent = 'Min. 6 characters'; return; }
-    if (np !== cp)            { document.getElementById('confirmPwErr').textContent = 'Passwords do not match'; return; }
-    if (np === pendingRegNo)  { document.getElementById('newPwErr').textContent = 'Choose a different password'; return; }
+    if (np !== cp) { document.getElementById('confirmPwErr').textContent = 'Passwords do not match'; return; }
+    if (np === pendingRegNo) { document.getElementById('newPwErr').textContent = 'Choose a different password'; return; }
 
     apiStudentChangePassword(np, pendingStudentToken)
       .then(() => {
@@ -218,7 +191,7 @@ function initChangePwModal() {
         document.body.style.overflow = '';
 
         setStudentSession(pendingRegNo, pendingStudentToken, pendingStudentName || STUDENTS_DB[pendingRegNo]);
-        showToast('🎉 Password set! Redirecting…', 'ok');
+        showToast('🎉 Password set! Redirecting…', 'ok top');
         setTimeout(() => window.location.href = 'index.html', 750);
       })
       .catch(() => {
@@ -229,7 +202,7 @@ function initChangePwModal() {
 
 // ── Eye toggle ────────────────────────────────────────────────
 function initEyeBtns() {
-  [['sEyeBtn','sPw'],['fEyeBtn','fPw'],['newPwEye','newPw'],['confirmPwEye','confirmPw']].forEach(([btn,inp]) => {
+  [['loginEyeBtn', 'loginPw'], ['newPwEye', 'newPw'], ['confirmPwEye', 'confirmPw']].forEach(([btn, inp]) => {
     const el = document.getElementById(btn);
     if (!el) return;
     el.addEventListener('click', () => {
@@ -241,22 +214,34 @@ function initEyeBtns() {
 
 // ── Helpers ───────────────────────────────────────────────────
 function setBtnLoading(textId, loaderId, loading) {
-  const textEl   = document.getElementById(textId);
+  const textEl = document.getElementById(textId);
   const loaderEl = document.getElementById(loaderId);
-  const btn      = textEl.closest('button');
-  btn.disabled          = loading;
-  textEl.hidden         = loading;
-  loaderEl.hidden       = !loading;
+  const btn = textEl.closest('button');
+  btn.disabled = loading;
+  textEl.hidden = loading;
+  loaderEl.hidden = !loading;
 }
 
 function pwStrength(v) {
   let s = 0;
-  if (v.length >= 6)  s++;
+  if (v.length >= 6) s++;
   if (v.length >= 10) s++;
   if (/[A-Z]/.test(v) && /[0-9]/.test(v)) s++;
   return Math.min(s, 3);
 }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function getSuperAdminSession() {
+  try { return JSON.parse(sessionStorage.getItem('chemtest_superadmin') || 'null'); }
+  catch { return null; }
+}
+
+function setSuperAdminSession(admin) {
+  sessionStorage.setItem('chemtest_superadmin', JSON.stringify({
+    ...admin,
+    loggedInAt: new Date().toISOString(),
+  }));
+}
 
 async function apiStudentLogin(regNo, password) {
   const res = await fetch('/api/auth/student/login', {

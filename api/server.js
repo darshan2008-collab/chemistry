@@ -4,10 +4,14 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { Pool } = require('pg');
+const XLSX = require('xlsx');
 
 const app = express();
 const port = Number(process.env.API_PORT || 3000);
-const uploadDir = process.env.UPLOAD_DIR || '/data/uploads';
+const uploadDir = process.env.UPLOAD_DIR || (process.platform === 'win32'
+  ? path.join(process.cwd(), 'data', 'uploads')
+  : '/data/uploads');
+const gradedReportFilePath = process.env.GRADED_REPORT_FILE || path.join(uploadDir, 'graded-report.xlsx');
 const studentsFile = process.env.STUDENTS_FILE || '/app/students-db.js';
 const resyncToken = process.env.RESYNC_TOKEN || '';
 const authPepper = process.env.AUTH_PEPPER || 'change_this_auth_pepper';
@@ -17,8 +21,142 @@ const staffDefaultEmail = (process.env.STAFF_DEFAULT_EMAIL || 'admin@chemtest.in
 const staffDefaultPassword = process.env.STAFF_DEFAULT_PASSWORD || 'ChangeThisNow_2026!';
 const staffDefaultName = process.env.STAFF_DEFAULT_NAME || 'System Admin';
 const staffDefaultRole = process.env.STAFF_DEFAULT_ROLE || 'Chemistry Teacher';
+const superAdminDefaultEmail = (process.env.SUPERADMIN_DEFAULT_EMAIL || 'unitaryx').trim().toLowerCase();
+const superAdminDefaultPassword = process.env.SUPERADMIN_DEFAULT_PASSWORD || 'unitary@10';
+const superAdminDefaultName = process.env.SUPERADMIN_DEFAULT_NAME || 'Unitary X';
+const superAdminDefaultRole = process.env.SUPERADMIN_DEFAULT_ROLE || 'Super Admin';
 
 app.use(express.json({ limit: '1mb' }));
+
+// ── Serve static files from uploads directory (images, etc.) ────────────
+app.use('/uploads', express.static(uploadDir));
+app.use('/api/uploads', express.static(uploadDir));
+
+function extractUploadFileName(input) {
+  let raw = input;
+  if (raw && typeof raw === 'object') {
+    raw = raw.url || raw.src || raw.path || raw.name || '';
+  }
+  raw = String(raw || '').trim();
+  if (!raw) return '';
+  if (/^(data:|blob:)/i.test(raw)) return raw;
+
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const parsed = new URL(raw);
+      raw = parsed.pathname || '';
+    } catch (_err) {
+      // ignore and continue best effort
+    }
+  }
+
+  raw = raw.split('?')[0].split('#')[0].replace(/\\/g, '/');
+
+  const markers = ['/api/files/', '/api/uploads/', '/uploads/', 'uploads/'];
+  for (const marker of markers) {
+    const idx = raw.toLowerCase().lastIndexOf(marker);
+    if (idx >= 0) {
+      const tail = raw.slice(idx + marker.length).replace(/^\/+/, '');
+      return decodeURIComponent(path.basename(tail));
+    }
+  }
+
+  return decodeURIComponent(path.basename(raw));
+}
+
+function toPublicImageUrl(input) {
+  const fileName = extractUploadFileName(input);
+  if (!fileName) return '';
+  if (/^(data:|blob:)/i.test(fileName)) return fileName;
+  return `/api/files/${encodeURIComponent(fileName)}`;
+}
+
+function normalizeImagesForStorage(value) {
+  if (!Array.isArray(value)) return [];
+  const unique = new Set();
+  const normalized = [];
+  for (const item of value) {
+    const fileName = extractUploadFileName(item);
+    if (!fileName || /^(data:|blob:)/i.test(fileName)) continue;
+    if (unique.has(fileName)) continue;
+    unique.add(fileName);
+    normalized.push(fileName);
+  }
+  return normalized;
+}
+
+function normalizeUploadUrl(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return '';
+  if (/^(data:|blob:)/i.test(raw)) return raw;
+  if (/^https?:\/\//i.test(raw)) {
+    try {
+      const parsed = new URL(raw);
+      const marker = '/uploads/';
+      const idx = parsed.pathname.toLowerCase().lastIndexOf(marker);
+      if (idx >= 0) {
+        const tail = parsed.pathname.slice(idx + marker.length).replace(/^\/+/, '');
+        return `/api/uploads/${tail}`;
+      }
+    } catch (_err) {
+      // Fall through to best-effort normalization below
+    }
+    return raw;
+  }
+  if (raw.startsWith('/api/uploads/')) return raw;
+  if (raw.startsWith('/uploads/')) return `/api${raw}`;
+  if (raw.startsWith('uploads/')) return `/api/${raw}`;
+
+  // Handle Windows/local absolute paths by taking only file name.
+  if (/^[a-zA-Z]:[\\/]/.test(raw) || raw.includes('\\')) {
+    return `/api/uploads/${path.basename(raw)}`;
+  }
+
+  // Handle any path that contains /uploads/ somewhere inside it.
+  const marker = '/uploads/';
+  const markerIdx = raw.toLowerCase().lastIndexOf(marker);
+  if (markerIdx >= 0) {
+    const tail = raw.slice(markerIdx + marker.length).replace(/^\/+/, '');
+    return `/api/uploads/${tail}`;
+  }
+
+  return `/api/uploads/${raw.replace(/^\/+/, '')}`;
+}
+
+app.get('/files/:name', async (req, res, next) => {
+  const safeName = path.basename(String(req.params.name || ''));
+  if (!safeName) {
+    return res.status(400).json({ error: 'Invalid file name' });
+  }
+
+  try {
+    const dbResult = await pool.query(
+      `SELECT mime_type, original_name, file_data
+       FROM uploads
+       WHERE stored_name = $1`,
+      [safeName]
+    );
+
+    if (dbResult.rows.length && dbResult.rows[0].file_data) {
+      const row = dbResult.rows[0];
+      if (row.mime_type) {
+        res.type(row.mime_type);
+      }
+      if (row.original_name) {
+        res.setHeader('Content-Disposition', `inline; filename="${path.basename(String(row.original_name))}"`);
+      }
+      return res.send(row.file_data);
+    }
+
+    const filePath = path.join(uploadDir, safeName);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+    return res.sendFile(path.resolve(filePath));
+  } catch (err) {
+    return next(err);
+  }
+});
 
 function requireEnv(name) {
   const value = process.env[name];
@@ -48,9 +186,11 @@ const pool = new Pool({
 });
 
 let dbReady = false;
+let excelRebuildInProgress = false;
 const sessions = new Map();
 
 fs.mkdirSync(uploadDir, { recursive: true });
+fs.mkdirSync(path.dirname(gradedReportFilePath), { recursive: true });
 
 const sanitize = (name) =>
   name
@@ -58,21 +198,41 @@ const sanitize = (name) =>
     .replace(/_+/g, '_')
     .slice(0, 120);
 
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, uploadDir),
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname || '').toLowerCase();
-    const base = sanitize(path.basename(file.originalname || 'file', ext));
-    const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    cb(null, `${base || 'file'}-${unique}${ext}`);
-  },
-});
+function createStoredUploadName(originalName) {
+  const ext = path.extname(originalName || '').toLowerCase();
+  const base = sanitize(path.basename(originalName || 'file', ext));
+  const unique = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  return `${base || 'file'}-${unique}${ext}`;
+}
+
+function cleanupUploadDiskCopies(fileNames) {
+  for (const rawName of fileNames || []) {
+    const safeName = path.basename(String(rawName || ''));
+    if (!safeName) continue;
+    const filePath = path.join(uploadDir, safeName);
+    try {
+      if (fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    } catch (_err) {
+      // Best effort: uploads are persisted in DB; disk cleanup failure should not fail request.
+    }
+  }
+}
 
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: {
     files: 20,
     fileSize: 15 * 1024 * 1024,
+  },
+});
+
+const excelUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    files: 1,
+    fileSize: 10 * 1024 * 1024,
   },
 });
 
@@ -115,6 +275,23 @@ function requireAuth(roles) {
   };
 }
 
+function isSuperAdminSession(session) {
+  const roleRaw = String(session?.staffRole || session?.roleName || '').toLowerCase();
+  return roleRaw === 'super admin' || roleRaw === 'superadmin';
+}
+
+function requireSuperAdmin(req, res, next) {
+  const session = getSessionFromRequest(req);
+  if (!session) {
+    return res.status(401).json({ error: 'Unauthorized' });
+  }
+  if (session.role !== 'staff' || !isSuperAdminSession(session)) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  req.auth = session;
+  next();
+}
+
 setInterval(() => {
   const now = Date.now();
   for (const [token, session] of sessions.entries()) {
@@ -151,7 +328,14 @@ app.post('/auth/student/login', async (req, res, next) => {
     }
 
     const row = result.rows[0];
-    if (hashPassword(password) !== row.password_hash) {
+    const passwordChanged = Boolean(row.password_changed);
+
+    // First login rule: before password is changed, default password is register number.
+    if (!passwordChanged) {
+      if (password !== regNo) {
+        return res.status(401).json({ error: 'Use register number as password for first login' });
+      }
+    } else if (hashPassword(password) !== row.password_hash) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
@@ -159,7 +343,7 @@ app.post('/auth/student/login', async (req, res, next) => {
     res.json({
       token,
       student: { regNo: row.reg_no, name: row.full_name },
-      mustChangePassword: !row.password_changed,
+      mustChangePassword: !passwordChanged,
     });
   } catch (err) {
     next(err);
@@ -209,8 +393,344 @@ app.post('/auth/staff/login', async (req, res, next) => {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    const token = createSession({ role: 'staff', email: row.email, name: row.full_name });
+    const token = createSession({ role: 'staff', staffRole: row.role, roleName: row.role, email: row.email, name: row.full_name });
     res.json({ token, staff: { email: row.email, name: row.full_name, role: row.role } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/admin/staff', requireSuperAdmin, async (_req, res, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT email, full_name, role, is_active, created_at, updated_at
+       FROM staff_accounts
+       ORDER BY created_at DESC, email ASC`
+    );
+    res.json({ staff: result.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/admin/staff', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const fullName = String(req.body?.fullName || '').trim();
+    const role = String(req.body?.role || 'Chemistry Teacher').trim() || 'Chemistry Teacher';
+    const password = String(req.body?.password || '');
+
+    if (!email || !fullName || !password) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+    if (password.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO staff_accounts (email, full_name, role, password_hash, is_active)
+       VALUES ($1, $2, $3, $4, TRUE)
+       ON CONFLICT (email)
+       DO UPDATE SET full_name = EXCLUDED.full_name,
+                     role = EXCLUDED.role,
+                     password_hash = EXCLUDED.password_hash,
+                     is_active = TRUE,
+                     updated_at = NOW()
+       RETURNING email, full_name, role, is_active, created_at, updated_at`,
+      [email, fullName, role, hashPassword(password)]
+    );
+
+    res.json({ ok: true, staff: result.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+function getExcelField(row, candidates) {
+  const normalizedCandidates = candidates.map((c) => c.toLowerCase());
+  for (const [key, value] of Object.entries(row || {})) {
+    const normalizedKey = String(key).toLowerCase().replace(/[^a-z0-9]/g, '');
+    if (normalizedCandidates.includes(normalizedKey)) return value;
+  }
+  return '';
+}
+
+function parseStudentsFromWorkbook(buffer) {
+  const workbook = XLSX.read(buffer, { type: 'buffer' });
+  const firstSheetName = workbook.SheetNames[0];
+  if (!firstSheetName) return [];
+  const sheet = workbook.Sheets[firstSheetName];
+  const rows = XLSX.utils.sheet_to_json(sheet, { defval: '' });
+
+  const students = [];
+  for (const row of rows) {
+    const regNo = String(
+      getExcelField(row, ['regno', 'registernumber', 'registerno', 'rollno', 'rollnumber'])
+    ).trim().toUpperCase();
+    const fullName = String(
+      getExcelField(row, ['fullname', 'studentname', 'name'])
+    ).trim();
+    const stream = String(
+      getExcelField(row, ['stream', 'department', 'class', 'branch'])
+    ).trim();
+    const section = String(
+      getExcelField(row, ['section', 'sec'])
+    ).trim().toUpperCase();
+
+    if (!regNo || !fullName) continue;
+    students.push({ regNo, fullName, stream, section });
+  }
+
+  return students;
+}
+
+function inferSectionFromRegNo(regNo) {
+  const code = String(regNo || '').toUpperCase();
+  if (code.includes('BAD') || code.includes('BAM')) return 'A7';
+  if (code.includes('BCS') || code.includes('BIT') || code.includes('BSC')) return 'A3';
+  return '';
+}
+
+async function rebuildGradedReportWorkbook() {
+  // Prevent concurrent rebuilds
+  if (excelRebuildInProgress) return;
+  excelRebuildInProgress = true;
+
+  try {
+    let sourceOrderMap = new Map();
+    try {
+      const sourceStudents = parseStudentsFromFile(studentsFile);
+      sourceOrderMap = new Map(Object.keys(sourceStudents).map((regNo, index) => [String(regNo).toUpperCase(), index]));
+    } catch (_err) {
+      sourceOrderMap = new Map();
+    }
+
+    const studentsResult = await pool.query(
+      `SELECT reg_no,
+              full_name,
+              COALESCE(NULLIF(TRIM(section), ''), 'Unspecified Section') AS section
+       FROM students`
+    );
+
+    const submissionsResult = await pool.query(
+      `SELECT sub.student_name,
+              sub.roll_number,
+              sub.test_title,
+              sub.subject,
+              sub.classroom,
+              sub.status,
+              sub.marks,
+              sub.total_marks,
+              sub.submitted_at,
+              sub.graded_at,
+              COALESCE(NULLIF(TRIM(s.section), ''), NULLIF(TRIM(sub.classroom), ''), 'Unspecified Section') AS section
+       FROM submissions sub
+       LEFT JOIN students s ON s.reg_no = sub.roll_number
+       ORDER BY COALESCE(sub.graded_at, sub.submitted_at) DESC`
+    );
+
+    const submissionsByRoll = new Map();
+    for (const sub of submissionsResult.rows) {
+      const regNo = String(sub.roll_number || '').toUpperCase();
+      if (!regNo) continue;
+      if (!submissionsByRoll.has(regNo)) submissionsByRoll.set(regNo, []);
+      submissionsByRoll.get(regNo).push(sub);
+    }
+
+    const orderedStudents = [...studentsResult.rows].sort((a, b) => {
+      const aKey = String(a.reg_no || '').toUpperCase();
+      const bKey = String(b.reg_no || '').toUpperCase();
+      const aOrder = sourceOrderMap.has(aKey) ? sourceOrderMap.get(aKey) : Number.MAX_SAFE_INTEGER;
+      const bOrder = sourceOrderMap.has(bKey) ? sourceOrderMap.get(bKey) : Number.MAX_SAFE_INTEGER;
+      if (aOrder !== bOrder) return aOrder - bOrder;
+      return aKey.localeCompare(bKey);
+    });
+
+    const rows = [];
+    for (const student of orderedStudents) {
+      const regNo = String(student.reg_no || '').toUpperCase();
+      const latestSubmission = (submissionsByRoll.get(regNo) || [])[0] || null;
+
+      rows.push({
+        'Student Name': student.full_name,
+        'Register Number': student.reg_no,
+        'Topic Name': latestSubmission?.test_title || '',
+        Subject: latestSubmission?.subject || '',
+        Classroom: latestSubmission?.classroom || '',
+        Status: latestSubmission?.status || 'not submitted',
+        Mark: latestSubmission && latestSubmission.marks !== null ? Number(latestSubmission.marks) : '',
+        'Total Marks': latestSubmission && latestSubmission.total_marks !== null ? Number(latestSubmission.total_marks) : '',
+        'Submitted At': latestSubmission?.submitted_at ? new Date(latestSubmission.submitted_at).toISOString() : '',
+        'Graded At': latestSubmission?.graded_at ? new Date(latestSubmission.graded_at).toISOString() : '',
+        Section: latestSubmission?.section || student.section || 'Unspecified Section',
+      });
+    }
+
+    const sanitizeSheetName = (value) =>
+      String(value || 'Sheet')
+        .replace(/[\\/*?:\[\]]/g, '-')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 31) || 'Sheet';
+
+    const workbook = XLSX.utils.book_new();
+
+    const allSheet = XLSX.utils.json_to_sheet(rows, {
+      header: ['Student Name', 'Register Number', 'Topic Name', 'Subject', 'Classroom', 'Status', 'Mark', 'Total Marks', 'Submitted At', 'Graded At', 'Section'],
+    });
+    XLSX.utils.book_append_sheet(workbook, allSheet, 'All Students');
+
+    const grouped = new Map();
+    for (const row of rows) {
+      const key = String(row.Section || 'Unspecified Section');
+      if (!grouped.has(key)) grouped.set(key, []);
+      grouped.get(key).push(row);
+    }
+
+    const usedNames = new Set(['All Students']);
+    for (const [section, groupRows] of grouped.entries()) {
+      const baseName = sanitizeSheetName(`Section ${section}`);
+      let sheetName = baseName;
+      let suffix = 1;
+      while (usedNames.has(sheetName)) {
+        const suffixText = ` (${suffix})`;
+        sheetName = `${baseName.slice(0, Math.max(1, 31 - suffixText.length))}${suffixText}`;
+        suffix += 1;
+      }
+      usedNames.add(sheetName);
+
+      const sheetRows = groupRows.map((r) => ({
+        'Student Name': r['Student Name'],
+        'Register Number': r['Register Number'],
+        'Topic Name': r['Topic Name'],
+        Status: r.Status,
+        Mark: r.Mark,
+        'Total Marks': r['Total Marks'],
+        'Submitted At': r['Submitted At'],
+        'Graded At': r['Graded At'],
+        Section: r.Section,
+      }));
+
+      const worksheet = XLSX.utils.json_to_sheet(sheetRows, {
+        header: ['Student Name', 'Register Number', 'Topic Name', 'Status', 'Mark', 'Total Marks', 'Submitted At', 'Graded At', 'Section'],
+      });
+      XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+    }
+
+    // Explicit class-wise sheets (A7/A3 etc.) sourced from DB student section values.
+    const sectionGroups = new Map();
+    for (const row of rows) {
+      const sectionKey = String(row.Section || 'Unspecified Section').toUpperCase();
+      if (!sectionGroups.has(sectionKey)) sectionGroups.set(sectionKey, []);
+      sectionGroups.get(sectionKey).push(row);
+    }
+
+    const defaultSections = ['A7', 'A3'];
+    for (const section of defaultSections) {
+      if (!sectionGroups.has(section)) sectionGroups.set(section, []);
+    }
+
+    for (const [section, sectionRows] of sectionGroups.entries()) {
+      const baseName = sanitizeSheetName(`Section ${section}`);
+      let sheetName = baseName;
+      let suffix = 1;
+      while (usedNames.has(sheetName)) {
+        const suffixText = ` (${suffix})`;
+        sheetName = `${baseName.slice(0, Math.max(1, 31 - suffixText.length))}${suffixText}`;
+        suffix += 1;
+      }
+      usedNames.add(sheetName);
+
+      const sheetRows = sectionRows.map((r) => ({
+        'Student Name': r['Student Name'],
+        'Register Number': r['Register Number'],
+        'Topic Name': r['Topic Name'],
+        Status: r.Status,
+        Mark: r.Mark,
+        'Total Marks': r['Total Marks'],
+        'Submitted At': r['Submitted At'],
+        'Graded At': r['Graded At'],
+      }));
+
+      const worksheet = XLSX.utils.json_to_sheet(sheetRows, {
+        header: ['Student Name', 'Register Number', 'Topic Name', 'Status', 'Mark', 'Total Marks', 'Submitted At', 'Graded At'],
+      });
+      XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+    }
+
+    XLSX.writeFile(workbook, gradedReportFilePath);
+
+    return {
+      rows: rows.length,
+      filePath: gradedReportFilePath,
+    };
+  } finally {
+    excelRebuildInProgress = false;
+  }
+}
+
+app.post('/admin/students/import', requireSuperAdmin, excelUpload.single('file'), async (req, res, next) => {
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ error: 'Excel file is required' });
+    }
+
+    const fallbackStream = String(req.body?.stream || '').trim();
+    const fallbackSection = String(req.body?.section || '').trim().toUpperCase();
+    const rows = parseStudentsFromWorkbook(req.file.buffer);
+    if (!rows.length) {
+      return res.status(400).json({ error: 'No valid student rows found in file' });
+    }
+
+    let inserted = 0;
+    let updated = 0;
+    const streamCount = {};
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const row of rows) {
+        const stream = row.stream || fallbackStream;
+        const section = row.section || fallbackSection || inferSectionFromRegNo(row.regNo);
+        const upsertStudent = await client.query(
+          `INSERT INTO students (reg_no, full_name, stream, section)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (reg_no)
+           DO UPDATE SET full_name = EXCLUDED.full_name,
+                         stream = EXCLUDED.stream,
+                         section = EXCLUDED.section
+           RETURNING (xmax = 0) AS inserted`,
+          [row.regNo, row.fullName, stream || null, section || null]
+        );
+
+        await client.query(
+          `INSERT INTO student_auth (reg_no, password_hash, password_changed)
+           VALUES ($1, $2, FALSE)
+           ON CONFLICT (reg_no) DO NOTHING`,
+          [row.regNo, hashPassword(row.regNo)]
+        );
+
+        if (upsertStudent.rows[0].inserted) inserted += 1;
+        else updated += 1;
+
+        const key = stream || 'Unspecified';
+        streamCount[key] = (streamCount[key] || 0) + 1;
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    res.json({
+      ok: true,
+      total: rows.length,
+      inserted,
+      updated,
+      streams: streamCount,
+    });
   } catch (err) {
     next(err);
   }
@@ -242,6 +762,22 @@ app.get('/students/count', requireAuth(['staff', 'student']), async (_req, res) 
 });
 
 function normalizeSubmissionRow(row) {
+  let images = [];
+  try {
+    if (typeof row.images === 'string') {
+      images = JSON.parse(row.images || '[]');
+    } else if (Array.isArray(row.images)) {
+      images = row.images;
+    }
+  } catch (e) {
+    console.error('[NORMALIZE] Failed to parse images:', e.message, 'raw:', row.images);
+  }
+
+  const normalizedImages = images
+    .map((item) => toPublicImageUrl(item))
+    .filter(Boolean);
+  images = normalizedImages;
+
   return {
     id: row.id,
     studentName: row.student_name,
@@ -250,7 +786,7 @@ function normalizeSubmissionRow(row) {
     classroom: row.classroom || '',
     testTitle: row.test_title || '',
     notes: row.notes || '',
-    images: Array.isArray(row.images) ? row.images : [],
+    images: images,
     fileCount: Number(row.file_count || 0),
     status: row.status || 'pending',
     marks: row.marks === null ? null : Number(row.marks),
@@ -298,7 +834,12 @@ app.get('/submissions', requireAuth(['staff', 'student']), async (req, res, next
     `;
 
     const result = await pool.query(query, params);
-    res.json({ submissions: result.rows.map(normalizeSubmissionRow) });
+    const normalized = result.rows.map(normalizeSubmissionRow);
+    console.log('[GET-SUBMISSIONS] Retrieved', normalized.length, 'submissions');
+    normalized.forEach((s, i) => {
+      console.log(`[GET-SUBMISSIONS] Submission ${i + 1} (${s.id}): images=${s.images ? s.images.length : 0}`);
+    });
+    res.json({ submissions: normalized });
   } catch (err) {
     next(err);
   }
@@ -330,12 +871,21 @@ app.post('/submissions', requireAuth('student'), async (req, res, next) => {
     const rollNumber = String(body.rollNumber || '').trim();
     const testTitle = String(body.testTitle || '').trim();
 
+    console.log('[SUBMISSION-CREATE] Received submission:', { id, studentName, rollNumber, testTitle });
+    console.log('[SUBMISSION-CREATE] Images count:', Array.isArray(body.images) ? body.images.length : 'not-array');
+    console.log('[SUBMISSION-CREATE] Images data:', body.images);
+
     if (!id || !studentName || !rollNumber || !testTitle) {
+      console.error('[SUBMISSION-CREATE] Missing required fields');
       return res.status(400).json({ error: 'Missing required fields' });
     }
     if (rollNumber !== req.auth.regNo) {
+      console.error('[SUBMISSION-CREATE] Forbidden: role mismatch');
       return res.status(403).json({ error: 'Forbidden' });
     }
+
+    const imagesJson = JSON.stringify(normalizeImagesForStorage(body.images));
+    console.log('[SUBMISSION-CREATE] Stringified images JSON:', imagesJson);
 
     const submissionValues = [
       id,
@@ -345,7 +895,7 @@ app.post('/submissions', requireAuth('student'), async (req, res, next) => {
       String(body.classroom || ''),
       testTitle,
       String(body.notes || ''),
-      JSON.stringify(Array.isArray(body.images) ? body.images : []),
+      imagesJson,
       Number(body.fileCount || 0),
       String(body.status || 'pending'),
       body.marks === null || body.marks === undefined || body.marks === '' ? null : Number(body.marks),
@@ -369,7 +919,10 @@ app.post('/submissions', requireAuth('student'), async (req, res, next) => {
       submissionValues
     );
 
-    res.status(201).json({ submission: normalizeSubmissionRow(result.rows[0]) });
+    const normalized = normalizeSubmissionRow(result.rows[0]);
+    console.log('[SUBMISSION-CREATE] ✓ Saved! DB row images:', result.rows[0].images);
+    console.log('[SUBMISSION-CREATE] ✓ Normalized images:', normalized.images);
+    res.status(201).json({ submission: normalized });
   } catch (err) {
     if (err && err.code === '23505') {
       return res.status(409).json({ error: 'Submission already exists' });
@@ -378,7 +931,7 @@ app.post('/submissions', requireAuth('student'), async (req, res, next) => {
   }
 });
 
-app.patch('/submissions/:id', requireAuth('staff'), async (req, res, next) => {
+app.patch('/submissions/:id', requireAuth(['staff', 'student']), async (req, res, next) => {
   try {
     const body = req.body || {};
     const editable = {
@@ -388,7 +941,7 @@ app.patch('/submissions/:id', requireAuth('staff'), async (req, res, next) => {
       classroom: ['classroom', (v) => String(v || '')],
       testTitle: ['test_title', (v) => String(v || '')],
       notes: ['notes', (v) => String(v || '')],
-      images: ['images', (v) => JSON.stringify(Array.isArray(v) ? v : [])],
+      images: ['images', (v) => JSON.stringify(normalizeImagesForStorage(v))],
       fileCount: ['file_count', (v) => Number(v || 0)],
       status: ['status', (v) => String(v || 'pending')],
       marks: ['marks', (v) => (v === null || v === '' || v === undefined ? null : Number(v))],
@@ -398,6 +951,28 @@ app.patch('/submissions/:id', requireAuth('staff'), async (req, res, next) => {
       gradedAt: ['graded_at', (v) => (v ? new Date(v) : null)],
       submittedAt: ['submitted_at', (v) => (v ? new Date(v) : null)],
     };
+
+    if (req.auth.role === 'student') {
+      const allowedForStudent = new Set(['testTitle', 'notes', 'images', 'fileCount']);
+      const disallowed = Object.keys(body).filter((key) => !allowedForStudent.has(key));
+      if (disallowed.length) {
+        return res.status(403).json({ error: `Students cannot update: ${disallowed.join(', ')}` });
+      }
+
+      const existing = await pool.query(
+        'SELECT id, roll_number, status FROM submissions WHERE id = $1',
+        [req.params.id]
+      );
+      if (!existing.rows.length) {
+        return res.status(404).json({ error: 'Submission not found' });
+      }
+      if (existing.rows[0].roll_number !== req.auth.regNo) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+      if (existing.rows[0].status !== 'pending') {
+        return res.status(400).json({ error: 'Only pending submissions can be edited' });
+      }
+    }
 
     const setParts = [];
     const params = [];
@@ -418,11 +993,16 @@ app.patch('/submissions/:id', requireAuth('staff'), async (req, res, next) => {
 
     setParts.push('updated_at = NOW()');
     params.push(req.params.id);
+    let whereClause = `id = $${params.length}`;
+    if (req.auth.role === 'student') {
+      params.push(req.auth.regNo);
+      whereClause += ` AND roll_number = $${params.length} AND status = 'pending'`;
+    }
 
     const result = await pool.query(
       `UPDATE submissions
        SET ${setParts.join(', ')}
-       WHERE id = $${params.length}
+       WHERE ${whereClause}
        RETURNING *`,
       params
     );
@@ -431,8 +1011,42 @@ app.patch('/submissions/:id', requireAuth('staff'), async (req, res, next) => {
       return res.status(404).json({ error: 'Submission not found' });
     }
 
-    res.json({ submission: normalizeSubmissionRow(result.rows[0]) });
+    const submission = normalizeSubmissionRow(result.rows[0]);
+    const reportSensitiveKeys = new Set(['studentName', 'rollNumber', 'testTitle', 'subject', 'classroom', 'status', 'marks', 'totalMarks', 'feedback', 'fileCount', 'submittedAt', 'gradedAt', 'archived']);
+    const shouldRefreshReport = req.auth.role === 'staff' && Object.keys(body).some((key) => reportSensitiveKeys.has(key));
+
+    let reportSync = null;
+    if (shouldRefreshReport) {
+      reportSync = await rebuildGradedReportWorkbook();
+    }
+
+    res.json({ submission, reportSync });
   } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/reports/graded.xlsx', requireAuth('staff'), async (_req, res, next) => {
+  try {
+    await rebuildGradedReportWorkbook();
+    res.download(gradedReportFilePath, 'graded-report.xlsx');
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/reports/students-list.xlsx', requireAuth('staff'), async (_req, res, next) => {
+  try {
+    const studentsListPath = path.resolve(uploadDir, 'students-list.xlsx');
+    console.log('[DEBUG] Students list path:', studentsListPath);
+    console.log('[DEBUG] File exists:', fs.existsSync(studentsListPath));
+
+    if (!fs.existsSync(studentsListPath)) {
+      return res.status(404).json({ error: 'Students list not found. Generate it first from Tracker tab.' });
+    }
+    res.download(studentsListPath, 'students-list.xlsx');
+  } catch (err) {
+    console.error('[ERROR] Download students-list:', err);
     next(err);
   }
 });
@@ -448,11 +1062,29 @@ app.post('/submissions/archive-all', requireAuth('staff'), async (_req, res, nex
   }
 });
 
-app.delete('/submissions/:id', requireAuth('staff'), async (req, res, next) => {
+app.delete('/submissions/:id', requireAuth(['staff', 'student']), async (req, res, next) => {
   try {
-    const result = await pool.query('DELETE FROM submissions WHERE id = $1 RETURNING id', [req.params.id]);
+    let result;
+    if (req.auth.role === 'student') {
+      result = await pool.query(
+        `DELETE FROM submissions
+         WHERE id = $1 AND roll_number = $2 AND status = 'pending'
+         RETURNING id`,
+        [req.params.id, req.auth.regNo]
+      );
+    } else {
+      result = await pool.query('DELETE FROM submissions WHERE id = $1 RETURNING id', [req.params.id]);
+    }
+
     if (!result.rows.length) {
+      if (req.auth.role === 'student') {
+        return res.status(404).json({ error: 'Submission not found or cannot be deleted' });
+      }
       return res.status(404).json({ error: 'Submission not found' });
+    }
+
+    if (req.auth.role === 'staff') {
+      await rebuildGradedReportWorkbook();
     }
     res.json({ ok: true });
   } catch (err) {
@@ -461,15 +1093,26 @@ app.delete('/submissions/:id', requireAuth('staff'), async (req, res, next) => {
 });
 
 app.post('/upload', requireAuth('student'), upload.array('files', 20), async (req, res, next) => {
+  console.log('[UPLOAD] Starting file upload...');
+  console.log('[UPLOAD] Files received:', (req.files || []).length);
+  console.log('[UPLOAD] Upload dir:', uploadDir);
+  console.log('[UPLOAD] First file:', req.files?.[0] ? { name: req.files[0].originalname, size: req.files[0].size, mime: req.files[0].mimetype } : 'none');
+
   const files = (req.files || []).map((file) => ({
+    storedName: createStoredUploadName(file.originalname),
     originalName: file.originalname,
-    name: file.filename,
-    url: `/uploads/${file.filename}`,
+    url: '',
     size: file.size,
     mimeType: file.mimetype,
+    data: file.buffer,
   }));
 
+  for (const file of files) {
+    file.url = toPublicImageUrl(file.storedName);
+  }
+
   if (!files.length) {
+    console.error('[UPLOAD] ERROR: No files provided in request');
     return res.status(400).json({ error: 'No files uploaded' });
   }
 
@@ -479,14 +1122,15 @@ app.post('/upload', requireAuth('student'), upload.array('files', 20), async (re
       await client.query('BEGIN');
       for (const file of files) {
         await client.query(
-          `INSERT INTO uploads (stored_name, original_name, mime_type, size_bytes, file_url)
-           VALUES ($1, $2, $3, $4, $5)
+          `INSERT INTO uploads (stored_name, original_name, mime_type, size_bytes, file_url, file_data)
+           VALUES ($1, $2, $3, $4, $5, $6)
            ON CONFLICT (stored_name)
            DO UPDATE SET original_name = EXCLUDED.original_name,
                          mime_type = EXCLUDED.mime_type,
                          size_bytes = EXCLUDED.size_bytes,
-                         file_url = EXCLUDED.file_url`,
-          [file.name, file.originalName, file.mimeType, file.size, file.url]
+                         file_url = EXCLUDED.file_url,
+                         file_data = EXCLUDED.file_data`,
+          [file.storedName, file.originalName, file.mimeType, file.size, file.url, file.data]
         );
       }
       await client.query('COMMIT');
@@ -497,8 +1141,19 @@ app.post('/upload', requireAuth('student'), upload.array('files', 20), async (re
       client.release();
     }
 
-    res.json({ files });
+    cleanupUploadDiskCopies(files.map((file) => file.storedName));
+
+    console.log('[UPLOAD] SUCCESS: Saved', files.length, 'files to database');
+    const responseFiles = files.map((file) => ({
+      name: file.storedName,
+      originalName: file.originalName,
+      url: file.url,
+      size: file.size,
+      mimeType: file.mimeType,
+    }));
+    res.json({ files: responseFiles });
   } catch (err) {
+    console.error('[UPLOAD] DATABASE ERROR:', err.message);
     next(err);
   }
 });
@@ -521,9 +1176,14 @@ async function ensureSchema() {
     CREATE TABLE IF NOT EXISTS students (
       reg_no TEXT PRIMARY KEY,
       full_name TEXT NOT NULL,
+      stream TEXT,
+      section TEXT,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+
+  await pool.query('ALTER TABLE students ADD COLUMN IF NOT EXISTS stream TEXT');
+  await pool.query('ALTER TABLE students ADD COLUMN IF NOT EXISTS section TEXT');
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS student_auth (
@@ -554,9 +1214,12 @@ async function ensureSchema() {
       mime_type TEXT,
       size_bytes BIGINT,
       file_url TEXT NOT NULL,
+      file_data BYTEA,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+
+  await pool.query('ALTER TABLE uploads ADD COLUMN IF NOT EXISTS file_data BYTEA');
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS submissions (
@@ -597,12 +1260,15 @@ async function syncStudentsFromFile() {
   try {
     await client.query('BEGIN');
     for (const [regNo, fullName] of entries) {
+      const section = inferSectionFromRegNo(regNo) || null;
       const upsertStudent = await client.query(
-        `INSERT INTO students (reg_no, full_name)
-         VALUES ($1, $2)
-         ON CONFLICT (reg_no) DO UPDATE SET full_name = EXCLUDED.full_name
+        `INSERT INTO students (reg_no, full_name, stream, section)
+         VALUES ($1, $2, NULL, $3)
+         ON CONFLICT (reg_no)
+         DO UPDATE SET full_name = EXCLUDED.full_name,
+                       section = COALESCE(students.section, EXCLUDED.section)
          RETURNING (xmax = 0) AS inserted`,
-        [regNo, fullName]
+        [regNo, fullName, section]
       );
 
       await client.query(
@@ -627,16 +1293,34 @@ async function syncStudentsFromFile() {
   return { inserted, updated, total: entries.length };
 }
 
-async function seedStaffIfEmpty() {
-  const result = await pool.query('SELECT COUNT(*)::int AS count FROM staff_accounts');
-  if (result.rows[0].count > 0) return;
-
+async function upsertDefaultStaffAccount() {
   await pool.query(
     `INSERT INTO staff_accounts (email, full_name, role, password_hash, is_active)
-     VALUES ($1, $2, $3, $4, TRUE)`,
+     VALUES ($1, $2, $3, $4, TRUE)
+     ON CONFLICT (email)
+     DO UPDATE SET full_name = EXCLUDED.full_name,
+                   role = EXCLUDED.role,
+                   password_hash = EXCLUDED.password_hash,
+                   is_active = TRUE,
+                   updated_at = NOW()`,
     [staffDefaultEmail, staffDefaultName, staffDefaultRole, hashPassword(staffDefaultPassword)]
   );
-  console.log(`Seeded default staff account: ${staffDefaultEmail}`);
+  console.log(`Upserted default staff account: ${staffDefaultEmail}`);
+}
+
+async function upsertDefaultSuperAdminAccount() {
+  await pool.query(
+    `INSERT INTO staff_accounts (email, full_name, role, password_hash, is_active)
+     VALUES ($1, $2, $3, $4, TRUE)
+     ON CONFLICT (email)
+     DO UPDATE SET full_name = EXCLUDED.full_name,
+                   role = EXCLUDED.role,
+                   password_hash = EXCLUDED.password_hash,
+                   is_active = TRUE,
+                   updated_at = NOW()`,
+    [superAdminDefaultEmail, superAdminDefaultName, superAdminDefaultRole, hashPassword(superAdminDefaultPassword)]
+  );
+  console.log(`Upserted default super admin account: ${superAdminDefaultEmail}`);
 }
 
 async function seedStudentsIfEmpty() {
@@ -662,6 +1346,32 @@ async function backfillMissingStudentAuth() {
   if (result.rowCount > 0) {
     console.log(`Backfilled ${result.rowCount} missing student_auth rows`);
   }
+}
+
+async function enforceDefaultPasswordForFirstLoginAccounts() {
+  const result = await pool.query(
+    `UPDATE student_auth a
+     SET password_hash = encode(digest(a.reg_no || ':' || $1, 'sha256'), 'hex'),
+         updated_at = NOW()
+     WHERE a.password_changed = FALSE`,
+    [authPepper]
+  );
+
+  if (result.rowCount > 0) {
+    console.log(`Enforced default password (reg_no) for ${result.rowCount} first-login student accounts`);
+  }
+}
+
+async function backfillStudentSectionFromRegNo() {
+  await pool.query(
+    `UPDATE students
+     SET section = CASE
+       WHEN reg_no LIKE '%BAD%' OR reg_no LIKE '%BAM%' THEN 'A7'
+       WHEN reg_no LIKE '%BCS%' OR reg_no LIKE '%BIT%' OR reg_no LIKE '%BSC%' THEN 'A3'
+       ELSE section
+     END
+     WHERE section IS NULL OR BTRIM(section) = ''`
+  );
 }
 
 app.post('/students/resync', requireAuth('staff'), async (req, res, next) => {
@@ -695,8 +1405,11 @@ app.use((err, _req, res, _next) => {
 async function bootstrap() {
   await ensureSchema();
   await seedStudentsIfEmpty();
+  await backfillStudentSectionFromRegNo();
   await backfillMissingStudentAuth();
-  await seedStaffIfEmpty();
+  await enforceDefaultPasswordForFirstLoginAccounts();
+  await upsertDefaultStaffAccount();
+  await upsertDefaultSuperAdminAccount();
   dbReady = true;
 
   app.listen(port, '0.0.0.0', () => {

@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Super Admin Login - ChemTest Portal</title>
+    <meta name="description" content="Secure super admin login for ChemTest Portal." />
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Space+Grotesk:wght@600;700;800&display=swap"
+        rel="stylesheet" />
+    <link rel="stylesheet" href="superadmin-login.css" />
+</head>
+
+<body>
+    <div class="bg-wrap" aria-hidden="true">
+        <div class="blob b1"></div>
+        <div class="blob b2"></div>
+        <div class="blob b3"></div>
+    </div>
+
+    <main class="shell">
+        <section class="card" aria-label="Super Admin Login">
+            <div class="logo">🛡️</div>
+            <h1>Super Admin</h1>
+            <p class="sub">ChemTest control access</p>
+
+            <form id="superAdminForm" novalidate>
+                <label class="label" for="saEmail">Email</label>
+                <input id="saEmail" type="email" autocomplete="username" placeholder="superadmin@chemtest.in"
+                    required />
+
+                <label class="label" for="saPassword">Password</label>
+                <div class="pw-wrap">
+                    <input id="saPassword" type="password" autocomplete="current-password" placeholder="Enter password"
+                        required />
+                    <button type="button" id="togglePw" class="ghost" aria-label="Toggle password">👁</button>
+                </div>
+
+                <p class="err" id="saErr"></p>
+
+                <button type="submit" class="btn" id="saBtn">
+                    <span class="btn-text">Login as Super Admin</span>
+                    <span class="btn-loader" hidden>Authenticating...</span>
+                </button>
+            </form>
+
+            <div class="links">
+                <a href="login.html">Back to Main Login</a>
+            </div>
+        </section>
+
+        <footer class="credit">
+            <span class="prefix">Designed and Powered by</span>
+            <span class="team">Team Unitary X</span>
+        </footer>
+    </main>
+
+    <div class="toast" id="toast" role="status" aria-live="polite"></div>
+
+    <script src="superadmin-login.js"></script>
+</body>
+
+</html>

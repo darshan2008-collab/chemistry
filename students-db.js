@@ -1,7 +1,7 @@
 // ── Student Database (extracted from register) ────────────────
 // Register Number → Full Name
 const STUDENTS_DB = {
-  // ── BAD Series ──────────────────────────────────────────────
+  // ── BAD  A7 Series ──────────────────────────────────────────────
   "927625BAD002": "ABARNA S",
   "927625BAD004": "ABISHEAK S",
   "927625BAD016": "ASWIN B",
@@ -49,7 +49,7 @@ const STUDENTS_DB = {
   "927625BAD176": "VENKATNATHAN M",
   "927625BAD178": "VIGNESH K",
   "927625BAD185": "VYSHNAVI M",
-  // ── BAM Series ──────────────────────────────────────────────
+  // ── BAM  A7 Series ──────────────────────────────────────────────
   "927625BAM003": "AJEYHARSAN P",
   "927625BAM004": "AKSHAYA LAKSHMI C",
   "927625BAM005": "ANBARASU S",
