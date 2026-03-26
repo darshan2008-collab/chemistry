@@ -10,6 +10,8 @@ const uploadDir = process.env.UPLOAD_DIR || '/data/uploads';
 const studentsFile = process.env.STUDENTS_FILE || '/app/students-db.js';
 const resyncToken = process.env.RESYNC_TOKEN || '';
 
+app.use(express.json({ limit: '1mb' }));
+
 function requireEnv(name) {
   const value = process.env[name];
   if (!value || !String(value).trim()) {
@@ -77,6 +79,207 @@ app.get('/health', async (_req, res) => {
 app.get('/students/count', async (_req, res) => {
   const result = await pool.query('SELECT COUNT(*)::int AS count FROM students');
   res.json({ count: result.rows[0].count });
+});
+
+function normalizeSubmissionRow(row) {
+  return {
+    id: row.id,
+    studentName: row.student_name,
+    rollNumber: row.roll_number,
+    subject: row.subject || '',
+    classroom: row.classroom || '',
+    testTitle: row.test_title || '',
+    notes: row.notes || '',
+    images: Array.isArray(row.images) ? row.images : [],
+    fileCount: Number(row.file_count || 0),
+    status: row.status || 'pending',
+    marks: row.marks === null ? null : Number(row.marks),
+    totalMarks: row.total_marks === null ? null : Number(row.total_marks),
+    feedback: row.feedback || '',
+    archived: Boolean(row.archived),
+    submittedAt: row.submitted_at,
+    gradedAt: row.graded_at,
+  };
+}
+
+app.get('/submissions', async (req, res, next) => {
+  try {
+    const rollNumber = String(req.query.rollNumber || '').trim();
+    const includeArchived = String(req.query.includeArchived || 'true').toLowerCase() === 'true';
+    const status = String(req.query.status || '').trim();
+
+    const where = [];
+    const params = [];
+    if (rollNumber) {
+      params.push(rollNumber);
+      where.push(`roll_number = $${params.length}`);
+    }
+    if (!includeArchived) {
+      where.push('archived = FALSE');
+    }
+    if (status) {
+      params.push(status);
+      where.push(`status = $${params.length}`);
+    }
+
+    const query = `
+      SELECT *
+      FROM submissions
+      ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
+      ORDER BY submitted_at DESC
+    `;
+
+    const result = await pool.query(query, params);
+    res.json({ submissions: result.rows.map(normalizeSubmissionRow) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/submissions/:id', async (req, res, next) => {
+  try {
+    const result = await pool.query('SELECT * FROM submissions WHERE id = $1', [req.params.id]);
+    if (!result.rows.length) {
+      return res.status(404).json({ error: 'Submission not found' });
+    }
+    res.json({ submission: normalizeSubmissionRow(result.rows[0]) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/submissions', async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const id = String(body.id || '').trim();
+    const studentName = String(body.studentName || '').trim();
+    const rollNumber = String(body.rollNumber || '').trim();
+    const testTitle = String(body.testTitle || '').trim();
+    if (!id || !studentName || !rollNumber || !testTitle) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const submissionValues = [
+      id,
+      studentName,
+      rollNumber,
+      String(body.subject || ''),
+      String(body.classroom || ''),
+      testTitle,
+      String(body.notes || ''),
+      JSON.stringify(Array.isArray(body.images) ? body.images : []),
+      Number(body.fileCount || 0),
+      String(body.status || 'pending'),
+      body.marks === null || body.marks === undefined || body.marks === '' ? null : Number(body.marks),
+      body.totalMarks === null || body.totalMarks === undefined || body.totalMarks === '' ? null : Number(body.totalMarks),
+      String(body.feedback || ''),
+      Boolean(body.archived),
+      body.submittedAt ? new Date(body.submittedAt) : new Date(),
+      body.gradedAt ? new Date(body.gradedAt) : null,
+    ];
+
+    const result = await pool.query(
+      `INSERT INTO submissions (
+        id, student_name, roll_number, subject, classroom, test_title, notes,
+        images, file_count, status, marks, total_marks, feedback, archived,
+        submitted_at, graded_at
+      ) VALUES (
+        $1, $2, $3, $4, $5, $6, $7,
+        $8::jsonb, $9, $10, $11, $12, $13, $14,
+        $15, $16
+      ) RETURNING *`,
+      submissionValues
+    );
+
+    res.status(201).json({ submission: normalizeSubmissionRow(result.rows[0]) });
+  } catch (err) {
+    if (err && err.code === '23505') {
+      return res.status(409).json({ error: 'Submission already exists' });
+    }
+    next(err);
+  }
+});
+
+app.patch('/submissions/:id', async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const editable = {
+      studentName: ['student_name', (v) => String(v || '')],
+      rollNumber: ['roll_number', (v) => String(v || '')],
+      subject: ['subject', (v) => String(v || '')],
+      classroom: ['classroom', (v) => String(v || '')],
+      testTitle: ['test_title', (v) => String(v || '')],
+      notes: ['notes', (v) => String(v || '')],
+      images: ['images', (v) => JSON.stringify(Array.isArray(v) ? v : [])],
+      fileCount: ['file_count', (v) => Number(v || 0)],
+      status: ['status', (v) => String(v || 'pending')],
+      marks: ['marks', (v) => (v === null || v === '' || v === undefined ? null : Number(v))],
+      totalMarks: ['total_marks', (v) => (v === null || v === '' || v === undefined ? null : Number(v))],
+      feedback: ['feedback', (v) => String(v || '')],
+      archived: ['archived', (v) => Boolean(v)],
+      gradedAt: ['graded_at', (v) => (v ? new Date(v) : null)],
+      submittedAt: ['submitted_at', (v) => (v ? new Date(v) : null)],
+    };
+
+    const setParts = [];
+    const params = [];
+    Object.keys(editable).forEach((key) => {
+      if (!(key in body)) return;
+      const [column, normalize] = editable[key];
+      params.push(normalize(body[key]));
+      if (column === 'images') {
+        setParts.push(`${column} = $${params.length}::jsonb`);
+      } else {
+        setParts.push(`${column} = $${params.length}`);
+      }
+    });
+
+    if (!setParts.length) {
+      return res.status(400).json({ error: 'No updatable fields provided' });
+    }
+
+    setParts.push('updated_at = NOW()');
+    params.push(req.params.id);
+
+    const result = await pool.query(
+      `UPDATE submissions
+       SET ${setParts.join(', ')}
+       WHERE id = $${params.length}
+       RETURNING *`,
+      params
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: 'Submission not found' });
+    }
+
+    res.json({ submission: normalizeSubmissionRow(result.rows[0]) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/submissions/archive-all', async (_req, res, next) => {
+  try {
+    const result = await pool.query(
+      'UPDATE submissions SET archived = TRUE, updated_at = NOW() WHERE archived = FALSE RETURNING id'
+    );
+    res.json({ ok: true, archived: result.rowCount || 0 });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete('/submissions/:id', async (req, res, next) => {
+  try {
+    const result = await pool.query('DELETE FROM submissions WHERE id = $1 RETURNING id', [req.params.id]);
+    if (!result.rows.length) {
+      return res.status(404).json({ error: 'Submission not found' });
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
 });
 
 app.post('/upload', upload.array('files', 20), async (req, res, next) => {
@@ -161,6 +364,32 @@ async function ensureSchema() {
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS submissions (
+      id TEXT PRIMARY KEY,
+      student_name TEXT NOT NULL,
+      roll_number TEXT NOT NULL,
+      subject TEXT,
+      classroom TEXT,
+      test_title TEXT NOT NULL,
+      notes TEXT,
+      images JSONB NOT NULL DEFAULT '[]'::jsonb,
+      file_count INT NOT NULL DEFAULT 0,
+      status TEXT NOT NULL DEFAULT 'pending',
+      marks NUMERIC,
+      total_marks NUMERIC,
+      feedback TEXT,
+      archived BOOLEAN NOT NULL DEFAULT FALSE,
+      submitted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      graded_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_submissions_roll_number ON submissions (roll_number)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_submissions_submitted_at ON submissions (submitted_at DESC)');
 }
 
 async function seedStudentsIfEmpty() {

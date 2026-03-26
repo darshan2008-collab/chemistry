@@ -3,18 +3,35 @@
 requireStudentAuth();
 
 const DB_KEY = 'chemtest_submissions';
-function getSubmissions() { try { return JSON.parse(localStorage.getItem(DB_KEY)) || []; } catch { return []; } }
-function saveSubmissions(d) { localStorage.setItem(DB_KEY, JSON.stringify(d)); }
+
+async function fetchSubmissions({ rollNumber, includeArchived = false } = {}) {
+  const params = new URLSearchParams();
+  if (rollNumber) params.set('rollNumber', rollNumber);
+  params.set('includeArchived', String(includeArchived));
+  const res = await fetch(`/api/submissions?${params.toString()}`);
+  if (!res.ok) throw new Error('Failed to load submissions');
+  const payload = await res.json();
+  return payload.submissions || [];
+}
+
+async function createSubmission(submission) {
+  const res = await fetch('/api/submissions', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(submission),
+  });
+  if (!res.ok) throw new Error('Failed to save submission');
+}
 
 // ── Init ──────────────────────────────────────────────────────
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   initNavbar();
   prefillStudentFields();
   initParticles();
-  updateStats();
+  await updateStats();
   initDropZone();
   initForm();
-  loadMyResults();      // auto-load results for logged-in student
+  await loadMyResults();
   initLightbox();
 });
 
@@ -44,9 +61,10 @@ function prefillStudentFields() {
 }
 
 // ── Stats ─────────────────────────────────────────────────────
-function updateStats() {
+async function updateStats() {
   const session = getStudentSession();
-  const all = getSubmissions();
+  if (!session) return;
+  const all = await fetchSubmissions({ rollNumber: session.regNo, includeArchived: false });
   const mine = session ? all.filter(s => s.rollNumber === session.regNo) : all;
   const graded  = mine.filter(s => s.status === 'graded').length;
   const pending = mine.filter(s => s.status !== 'graded').length;
@@ -224,9 +242,7 @@ async function handleSubmit(e) {
       submittedAt: new Date().toISOString(), gradedAt: null,
     };
 
-    const submissions = getSubmissions();
-    submissions.unshift(submission);
-    saveSubmissions(submissions);
+    await createSubmission(submission);
 
     // Success
     const idDisplay = document.getElementById('submissionIdDisplay');
@@ -236,8 +252,8 @@ async function handleSubmit(e) {
     prefillStudentFields();
     selectedFiles = [];
     document.getElementById('previewGrid').innerHTML = '';
-    updateStats();
-    loadMyResults();
+    await updateStats();
+    await loadMyResults();
 
   } catch (err) {
     hideUploadProgress();
@@ -251,10 +267,10 @@ async function handleSubmit(e) {
 
 
 // ── Auto-load my results ──────────────────────────────────────
-function loadMyResults() {
+async function loadMyResults() {
   const session = getStudentSession();
   if (!session) return;
-  const submissions = getSubmissions();
+  const submissions = await fetchSubmissions({ rollNumber: session.regNo, includeArchived: false });
   const mine = submissions.filter(s => s.rollNumber === session.regNo);
   const list = document.getElementById('resultsList');
   if (!mine.length) {

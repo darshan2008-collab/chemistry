@@ -11,19 +11,31 @@ document.addEventListener('DOMContentLoaded', () => {
   loadSubmission();
 });
 
-function getSubmissions() {
-  try { return JSON.parse(localStorage.getItem('chemtest_submissions')) || []; }
-  catch { return []; }
-}
-function saveSubmissions(arr) {
-  localStorage.setItem('chemtest_submissions', JSON.stringify(arr));
+async function apiGetSubmission(id) {
+  const res = await fetch(`/api/submissions/${encodeURIComponent(id)}`);
+  if (!res.ok) throw new Error('Submission not found');
+  const payload = await res.json();
+  return payload.submission;
 }
 
-function loadSubmission() {
+async function apiUpdateSubmission(id, updates) {
+  const res = await fetch(`/api/submissions/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(updates),
+  });
+  if (!res.ok) throw new Error('Failed to save grade');
+  const payload = await res.json();
+  return payload.submission;
+}
+
+async function loadSubmission() {
   if (!currentId) return goBackError();
-  const all = getSubmissions();
-  currentSubmission = all.find(s => s.id === currentId);
-  if (!currentSubmission) return goBackError();
+  try {
+    currentSubmission = await apiGetSubmission(currentId);
+  } catch (_err) {
+    return goBackError();
+  }
 
   const s = currentSubmission;
 
@@ -57,7 +69,7 @@ function loadSubmission() {
   }
 }
 
-function saveGrade() {
+async function saveGrade() {
   const marks = document.getElementById('marksInput').value;
   const total = document.getElementById('totalMarksInput').value;
   const status = document.getElementById('statusSelect').value;
@@ -68,17 +80,18 @@ function saveGrade() {
     if (!total) { showToast('⚠️ Please enter total marks limit.', 'error'); return; }
   }
 
-  const all = getSubmissions();
-  const idx = all.findIndex(s => s.id === currentId);
-  if (idx !== -1) {
-    all[idx].marks = marks || null;
-    all[idx].totalMarks = total || null;
-    all[idx].status = status;
-    all[idx].feedback = feedback;
-    if (status === 'graded' && !all[idx].gradedAt) {
-      all[idx].gradedAt = new Date().toISOString();
+  try {
+    const updates = {
+      marks: marks || null,
+      totalMarks: total || null,
+      status,
+      feedback,
+    };
+    if (status === 'graded' && !currentSubmission?.gradedAt) {
+      updates.gradedAt = new Date().toISOString();
     }
-    saveSubmissions(all);
+
+    currentSubmission = await apiUpdateSubmission(currentId, updates);
     showToast('✅ Grade saved!', 'success');
     
     // Auto-return after short delay
@@ -86,6 +99,8 @@ function saveGrade() {
     btn.disabled = true;
     btn.innerHTML = 'Saved! Returning...';
     setTimeout(() => { window.location.href = 'staff-dashboard.html'; }, 800);
+  } catch (err) {
+    showToast('⚠️ Failed to save grade', 'error');
   }
 }
 

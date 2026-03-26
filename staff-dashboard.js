@@ -2,14 +2,34 @@
 const staff = JSON.parse(sessionStorage.getItem('chemtest_staff') || 'null');
 if (!staff) { window.location.href = 'login.html'; }
 
-const DB_KEY = 'chemtest_submissions';
-const getSubmissions = () => { try { return JSON.parse(localStorage.getItem(DB_KEY)) || []; } catch { return []; } };
-const saveSubmissions = d => localStorage.setItem(DB_KEY, JSON.stringify(d));
+let submissionsCache = [];
+const getSubmissions = () => submissionsCache;
+
+async function apiFetchSubmissions() {
+  const res = await fetch('/api/submissions?includeArchived=true');
+  if (!res.ok) throw new Error('Failed to load submissions');
+  const payload = await res.json();
+  return payload.submissions || [];
+}
+
+async function apiArchiveAllSubmissions() {
+  const res = await fetch('/api/submissions/archive-all', { method: 'POST' });
+  if (!res.ok) throw new Error('Failed to archive submissions');
+}
+
+async function apiDeleteSubmission(id) {
+  const res = await fetch(`/api/submissions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  if (!res.ok) throw new Error('Failed to delete submission');
+}
+
+async function refreshSubmissions() {
+  submissionsCache = await apiFetchSubmissions();
+}
 
 let currentEditId = null;
 let activeTab = 'dashboard';
 
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   setStaffUI();
   setDate();
   initSidebar();
@@ -19,41 +39,38 @@ document.addEventListener('DOMContentLoaded', () => {
   initLightbox();
   initClearData();
   initAutoRefresh();
+  await refreshSubmissions();
   renderAll();
 });
 
 // ── Auto-refresh (poll + cross-tab storage events) ────────────
 let _lastCount = -1;
 function initAutoRefresh() {
-  // Poll every 5 seconds for same-device updates
-  setInterval(() => {
-    const count = getSubmissions().length;
-    if (count !== _lastCount) {
-      _lastCount = count;
-      renderAll();
+  // Poll every 5 seconds for cross-device updates
+  setInterval(async () => {
+    try {
+      await refreshSubmissions();
+      const count = getSubmissions().length;
+      if (count !== _lastCount) {
+        _lastCount = count;
+        renderAll();
+      }
+    } catch (_err) {
+      // Keep UI usable even if refresh fails temporarily.
     }
   }, 5000);
-
-  // Instantly react when another tab/device submits (localStorage change)
-  window.addEventListener('storage', e => {
-    if (e.key === 'chemtest_submissions') {
-      renderAll();
-      showToast('🔔 New submission received!', 'info');
-    }
-  });
 }
 
 // ── Clear all data ────────────────────────────────────────────
 function initClearData() {
   const btn = document.getElementById('clearDataBtn');
   if (!btn) return;
-  btn.addEventListener('click', (e) => {
+  btn.addEventListener('click', async (e) => {
     e.preventDefault();
     if (!confirm('⚠️ This will CLEAR the Tracker for a new test. (Past tests will remain safely in Student Records). Proceed?')) return;
     try {
-      const all = getSubmissions();
-      all.forEach(s => s.archived = true);
-      saveSubmissions(all);
+      await apiArchiveAllSubmissions();
+      await refreshSubmissions();
       
       _lastCount = -1;
       
@@ -323,16 +340,18 @@ window.changeOwnPassword = function() {
 window.deleteTestSubmission = function(e, id) {
   if (e) { e.preventDefault(); e.stopPropagation(); }
   if (!confirm('Are you sure you want to permanently delete this test submission?')) return;
-  try {
-    const submissions = getSubmissions().filter(s => s.id !== id);
-    saveSubmissions(submissions);
-    _lastCount = -1; // Trigger auto-refresh
-    renderAll();
-    showToast('🗑️ Test submission deleted', 'info');
-  } catch(err) {
-    console.error('Delete error:', err);
-    showToast('⚠️ Error: ' + err.message, 'error');
-  }
+  (async () => {
+    try {
+      await apiDeleteSubmission(id);
+      await refreshSubmissions();
+      _lastCount = -1;
+      renderAll();
+      showToast('🗑️ Test submission deleted', 'info');
+    } catch(err) {
+      console.error('Delete error:', err);
+      showToast('⚠️ Error: ' + err.message, 'error');
+    }
+  })();
 };
 
 // ── Card Builder ──────────────────────────────────────────────
@@ -399,7 +418,17 @@ function initRefresh() {
   document.getElementById('refreshBtn').addEventListener('click', () => {
     const btn = document.getElementById('refreshBtn');
     btn.classList.add('spinning');
-    setTimeout(() => { renderAll(); btn.classList.remove('spinning'); showToast('🔄 Refreshed', 'info'); }, 600);
+    setTimeout(async () => {
+      try {
+        await refreshSubmissions();
+        renderAll();
+        showToast('🔄 Refreshed', 'info');
+      } catch (err) {
+        showToast('⚠️ Refresh failed', 'error');
+      } finally {
+        btn.classList.remove('spinning');
+      }
+    }, 600);
   });
 }
 
