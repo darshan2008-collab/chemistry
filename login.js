@@ -1,7 +1,162 @@
+// ── Temporary redirect debug trace ─────────────────────────────
+const REDIRECT_DEBUG_ENABLED = true;
+let redirectDebugPanel = null;
+
+function initRedirectDebugPanel() {
+  if (!REDIRECT_DEBUG_ENABLED || redirectDebugPanel) return;
+  redirectDebugPanel = document.createElement('div');
+  redirectDebugPanel.id = 'redirect-debug-trace';
+  redirectDebugPanel.style.cssText = [
+    'position:fixed',
+    'right:10px',
+    'bottom:10px',
+    'z-index:99999',
+    'width:min(460px,92vw)',
+    'max-height:42vh',
+    'overflow:auto',
+    'padding:10px',
+    'border-radius:10px',
+    'background:rgba(8,12,24,0.92)',
+    'border:1px solid rgba(120,190,255,0.45)',
+    'font:12px/1.4 ui-monospace,SFMono-Regular,Menlo,Consolas,monospace',
+    'color:#d8ecff',
+    'box-shadow:0 10px 28px rgba(0,0,0,0.45)'
+  ].join(';');
+
+  const header = document.createElement('div');
+  header.textContent = 'Redirect Trace (login.js)';
+  header.style.cssText = 'font-weight:700;margin-bottom:8px;color:#7fd0ff';
+  redirectDebugPanel.appendChild(header);
+
+  const mount = document.body || document.documentElement;
+  mount.appendChild(redirectDebugPanel);
+}
+
+function redirectTrace(message) {
+  if (!REDIRECT_DEBUG_ENABLED) return;
+  initRedirectDebugPanel();
+  const line = document.createElement('div');
+  const stamp = new Date().toISOString().slice(11, 23);
+  line.textContent = `[${stamp}] ${message}`;
+  line.style.cssText = 'padding:2px 0;border-top:1px dashed rgba(180,220,255,0.18)';
+  redirectDebugPanel.appendChild(line);
+  while (redirectDebugPanel.childElementCount > 22) {
+    redirectDebugPanel.removeChild(redirectDebugPanel.children[1]);
+  }
+  console.log('[RedirectTrace][login.js]', message);
+}
+
 // ── Reidrect if already logged in ─────────────────────────────
-if (getStudentSession()) window.location.replace('index.html');
-if (getStaffSession()) window.location.replace('staff-dashboard.html');
-if (getSuperAdminSession()) window.location.replace('superadmin-dashboard.html');
+redirectTrace('Bootstrapping auth redirect checks');
+bootstrapAuthRedirect();
+
+async function bootstrapAuthRedirect() {
+  const student = getStudentSession();
+  const superAdmin = getSuperAdminSession();
+  const staff = getStaffSession();
+  redirectTrace(`Session presence -> student:${!!student} superadmin:${!!superAdmin} staff:${!!staff}`);
+
+  if (!student && !superAdmin && !staff) return;
+
+  const candidates = [];
+
+  if (student && await isStudentSessionValid(student)) {
+    redirectTrace('Validated student session token');
+    candidates.push({ role: 'student', ts: sessionTs(student) });
+  }
+  if (superAdmin && await isSuperAdminSessionValid(superAdmin)) {
+    redirectTrace('Validated superadmin session token');
+    candidates.push({ role: 'superadmin', ts: sessionTs(superAdmin) });
+  }
+  if (staff && await isStaffSessionValid(staff)) {
+    redirectTrace('Validated staff session token');
+    candidates.push({ role: 'staff', ts: sessionTs(staff) });
+  }
+
+  if (!candidates.length) {
+    redirectTrace('No valid sessions left, clearing storage keys');
+    clearAllRoleSessions();
+    return;
+  }
+
+  candidates.sort((a, b) => b.ts - a.ts);
+  const selected = candidates[0].role;
+  redirectTrace(`Redirect decision -> ${selected}`);
+  if (selected === 'student') {
+    redirectTrace('Navigating to index.html');
+    window.location.replace('index.html');
+  }
+  if (selected === 'superadmin') {
+    redirectTrace('Navigating to superadmin-dashboard.html');
+    window.location.replace('superadmin-dashboard.html');
+  }
+  if (selected === 'staff') {
+    redirectTrace('Navigating to staff-dashboard.html');
+    window.location.replace('staff-dashboard.html');
+  }
+}
+
+function sessionTs(session) {
+  const ts = Date.parse(String(session?.loggedInAt || ''));
+  return Number.isFinite(ts) ? ts : 0;
+}
+
+function clearAllRoleSessions() {
+  sessionStorage.removeItem('chemtest_student');
+  sessionStorage.removeItem('chemtest_staff');
+  sessionStorage.removeItem('chemtest_superadmin');
+}
+
+async function isStudentSessionValid(session) {
+  if (!session?.token || !session?.regNo) return false;
+  try {
+    const params = new URLSearchParams({
+      rollNumber: String(session.regNo),
+      includeArchived: 'false',
+      _ts: String(Date.now()),
+    });
+    const res = await fetch(`/api/submissions?${params.toString()}`, {
+      headers: { Authorization: `Bearer ${session.token}` },
+      cache: 'no-store',
+    });
+    redirectTrace(`Student token check -> HTTP ${res.status}`);
+    return res.ok;
+  } catch (_err) {
+    redirectTrace('Student token check failed (network/exception)');
+    return false;
+  }
+}
+
+async function isStaffSessionValid(session) {
+  if (!session?.token) return false;
+  try {
+    const params = new URLSearchParams({ includeArchived: 'true', _ts: String(Date.now()) });
+    const res = await fetch(`/api/submissions?${params.toString()}`, {
+      headers: { Authorization: `Bearer ${session.token}` },
+      cache: 'no-store',
+    });
+    redirectTrace(`Staff token check -> HTTP ${res.status}`);
+    return res.ok;
+  } catch (_err) {
+    redirectTrace('Staff token check failed (network/exception)');
+    return false;
+  }
+}
+
+async function isSuperAdminSessionValid(session) {
+  if (!session?.token) return false;
+  try {
+    const res = await fetch('/api/admin/staff', {
+      headers: { Authorization: `Bearer ${session.token}` },
+      cache: 'no-store',
+    });
+    redirectTrace(`Superadmin token check -> HTTP ${res.status}`);
+    return res.ok;
+  } catch (_err) {
+    redirectTrace('Superadmin token check failed (network/exception)');
+    return false;
+  }
+}
 
 // ── Init ──────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -110,6 +265,7 @@ function initUnifiedForm() {
 
     try {
       if (isStudent) {
+        redirectTrace(`Submit path -> treating ${rawId} as student`);
         const payload = await apiStudentLogin(regCandidate, pw);
 
         if (payload.mustChangePassword) {
@@ -122,13 +278,18 @@ function initUnifiedForm() {
         }
 
         setStudentSession(regCandidate, payload.token, payload?.student?.name || STUDENTS_DB[regCandidate]);
+        sessionStorage.removeItem('chemtest_staff');
+        sessionStorage.removeItem('chemtest_superadmin');
         showToast('👋 Welcome, ' + (payload?.student?.name || STUDENTS_DB[regCandidate]) + '!', 'ok top');
+        redirectTrace('Login success -> redirecting student to index.html');
         setTimeout(() => window.location.href = 'index.html', 700);
         return;
       }
 
+      redirectTrace(`Submit path -> treating ${rawId} as staff/superadmin`);
       const payload = await apiStaffLogin(rawId.toLowerCase(), pw);
       const role = String(payload?.staff?.role || '').toLowerCase();
+      redirectTrace(`Staff login role resolved -> ${role || 'unknown'}`);
 
       if (/super\s*admin/.test(role) || role === 'superadmin') {
         setSuperAdminSession({
@@ -137,7 +298,10 @@ function initUnifiedForm() {
           role: payload.staff.role,
           token: payload.token,
         });
+        sessionStorage.removeItem('chemtest_staff');
+        sessionStorage.removeItem('chemtest_student');
         showToast('👑 Welcome Super Admin!', 'ok top');
+        redirectTrace('Login success -> redirecting to superadmin-dashboard.html');
         setTimeout(() => window.location.href = 'superadmin-dashboard.html', 700);
         return;
       }
@@ -148,10 +312,14 @@ function initUnifiedForm() {
         role: payload.staff.role,
         token: payload.token,
       });
+      sessionStorage.removeItem('chemtest_student');
+      sessionStorage.removeItem('chemtest_superadmin');
       showToast('👋 Welcome, ' + payload.staff.name + '!', 'ok top');
+      redirectTrace('Login success -> redirecting to staff-dashboard.html');
       setTimeout(() => window.location.href = 'staff-dashboard.html', 700);
     } catch (_err) {
       pwErr.textContent = 'Invalid credentials';
+      redirectTrace('Login failed -> invalid credentials');
       showToast('❌ Invalid username or password', 'bad');
     }
   });
@@ -191,6 +359,8 @@ function initChangePwModal() {
         document.body.style.overflow = '';
 
         setStudentSession(pendingRegNo, pendingStudentToken, pendingStudentName || STUDENTS_DB[pendingRegNo]);
+        sessionStorage.removeItem('chemtest_staff');
+        sessionStorage.removeItem('chemtest_superadmin');
         showToast('🎉 Password set! Redirecting…', 'ok top');
         setTimeout(() => window.location.href = 'index.html', 750);
       })

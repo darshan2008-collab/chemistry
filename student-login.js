@@ -138,6 +138,8 @@ function initForm() {
 
     // All good — set session and go
     setStudentSession(regNo, payload.token, payload?.student?.name || STUDENTS_DB[regNo]);
+    sessionStorage.removeItem('chemtest_staff');
+    sessionStorage.removeItem('chemtest_superadmin');
     showToast('✅ Welcome, ' + (payload?.student?.name || STUDENTS_DB[regNo]) + '!', 'success');
     setTimeout(() => { window.location.href = 'index.html'; }, 700);
   });
@@ -230,6 +232,8 @@ async function saveNewPassword() {
   document.body.style.overflow = '';
 
   setStudentSession(pendingRegNo, pendingToken, pendingName || STUDENTS_DB[pendingRegNo]);
+  sessionStorage.removeItem('chemtest_staff');
+  sessionStorage.removeItem('chemtest_superadmin');
   showToast('🎉 Password set! Redirecting…', 'success');
   setTimeout(() => { window.location.href = 'index.html'; }, 800);
 }

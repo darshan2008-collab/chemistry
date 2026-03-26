@@ -102,6 +102,8 @@ function initForm() {
       token: payload.token,
       loggedInAt: new Date().toISOString(),
     }));
+    sessionStorage.removeItem('chemtest_student');
+    sessionStorage.removeItem('chemtest_superadmin');
 
     showToast('✅ Login successful! Redirecting…', 'success');
     setTimeout(() => { window.location.href = 'staff-dashboard.html'; }, 800);
@@ -117,8 +119,8 @@ function validate() {
   const email = document.getElementById('email').value.trim();
   const pw = document.getElementById('password').value;
 
-  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    document.getElementById('emailErr').textContent = 'Enter a valid email address';
+  if (!email || email.length < 3) {
+    document.getElementById('emailErr').textContent = 'Enter your username or email';
     document.getElementById('email').classList.add('error-border');
     ok = false;
   } else {
