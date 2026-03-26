@@ -207,12 +207,7 @@ async function handleSubmit(e) {
 
   try {
     // Upload files to backend and store persistent URLs
-    const imageData = await uploadFiles(selectedFiles.slice(0, 20), (loaded, total) => {
-      const elapsedSec = Math.max((Date.now() - uploadStartTimeMs) / 1000, 0.001);
-      const percent = total > 0 ? (loaded / total) * 100 : 0;
-      const speed = formatUploadSpeed(loaded / elapsedSec);
-      setUploadProgress(percent, speed);
-    });
+    const imageData = await uploadFiles(selectedFiles.slice(0, 20), (percent, speed) => setUploadProgress(percent, speed));
     setUploadProgress(100, 'Done');
 
     const submission = {
@@ -325,17 +320,43 @@ function escapeHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;
 function uploadFiles(files, onProgress) {
   const form = new FormData();
   files.forEach(f => form.append('files', f));
+  const fallbackTotalBytes = files.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
 
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/upload', true);
 
+    let lastLoaded = 0;
+    let lastTs = Date.now();
+
+    xhr.upload.onloadstart = () => {
+      if (typeof onProgress === 'function') {
+        onProgress(0, '0 KB/s');
+      }
+    };
+
     xhr.upload.onprogress = (event) => {
-      if (!event.lengthComputable || typeof onProgress !== 'function') return;
-      onProgress(event.loaded, event.total);
+      if (typeof onProgress !== 'function') return;
+
+      const loaded = Number(event.loaded) || 0;
+      const total = event.lengthComputable && event.total > 0 ? Number(event.total) : fallbackTotalBytes;
+      const now = Date.now();
+      const dt = Math.max((now - lastTs) / 1000, 0.001);
+      const speed = formatUploadSpeed(Math.max(0, loaded - lastLoaded) / dt);
+
+      lastLoaded = loaded;
+      lastTs = now;
+
+      const percent = total > 0 ? (loaded / total) * 100 : 0;
+      onProgress(percent, speed);
     };
 
     xhr.onerror = () => reject(new Error('Upload failed'));
+    xhr.onloadend = () => {
+      if (typeof onProgress === 'function') {
+        onProgress(100, 'Done');
+      }
+    };
     xhr.onload = () => {
       if (xhr.status < 200 || xhr.status >= 300) {
         return reject(new Error(xhr.responseText || 'Upload failed'));
