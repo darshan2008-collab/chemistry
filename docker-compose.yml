@@ -3,7 +3,6 @@ services:
     image: postgres:16-alpine
     container_name: chemtest-db
     restart: unless-stopped
-    profiles: ["internal-db"]
     environment:
       TZ: ${TZ}
       POSTGRES_DB: ${DB_NAME}
@@ -32,7 +31,6 @@ services:
     depends_on:
       chemtest-db:
         condition: service_healthy
-        required: false
     environment:
       TZ: ${TZ}
       API_PORT: ${API_PORT}

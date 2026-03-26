@@ -87,10 +87,7 @@ function initForm() {
     btn.disabled = true;
     btn.querySelector('.btn-text').hidden = true;
     btn.querySelector('.btn-loader').hidden = false;
-    await new Promise(r => setTimeout(r, 900));
-    btn.disabled = false;
-    btn.querySelector('.btn-text').hidden = false;
-    btn.querySelector('.btn-loader').hidden = true;
+    startLoginAnimation();
 
     let payload;
     try {
@@ -111,6 +108,11 @@ function initForm() {
       document.getElementById('password').classList.add('err-border');
       showToast('❌ Incorrect password', 'error');
       return;
+    } finally {
+      stopLoginAnimation();
+      btn.disabled = false;
+      btn.querySelector('.btn-text').hidden = false;
+      btn.querySelector('.btn-loader').hidden = true;
     }
     document.getElementById('pwErr').textContent = '';
     document.getElementById('password').classList.remove('err-border');
@@ -136,6 +138,16 @@ function initForm() {
     document.getElementById('pwErr').textContent = '';
     document.getElementById('password').classList.remove('err-border');
   });
+}
+
+function startLoginAnimation() {
+  const fx = document.getElementById('loginFx');
+  if (fx) fx.classList.add('show');
+}
+
+function stopLoginAnimation() {
+  const fx = document.getElementById('loginFx');
+  if (fx) fx.classList.remove('show');
 }
 
 // ── Change Password Modal ─────────────────────────────────────

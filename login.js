@@ -4,13 +4,45 @@ if (getStaffSession())                                         window.location.r
 
 // ── Init ──────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
+  runIntroAnimation();
   initBg();
   initTabs();
   initStudentForm();
   initStaffForm();
   initChangePwModal();
   initEyeBtns();
+  initCardMotion();
 });
+
+function runIntroAnimation() {
+  const fx = document.getElementById('introFx');
+  if (!fx) return;
+  fx.classList.add('show');
+  setTimeout(() => {
+    fx.classList.remove('show');
+  }, 1900);
+}
+
+function initCardMotion() {
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const card = document.querySelector('.card');
+  if (!card) return;
+
+  card.addEventListener('mousemove', (e) => {
+    const rect = card.getBoundingClientRect();
+    const x = (e.clientX - rect.left) / rect.width;
+    const y = (e.clientY - rect.top) / rect.height;
+    const rotateY = (x - 0.5) * 4;
+    const rotateX = (0.5 - y) * 4;
+    card.style.transform = `rotateX(${rotateX}deg) rotateY(${rotateY}deg) translateY(-2px)`;
+    card.style.boxShadow = '0 30px 72px rgba(0,0,0,0.52), 0 0 0 1px rgba(255,255,255,0.06)';
+  });
+
+  card.addEventListener('mouseleave', () => {
+    card.style.transform = '';
+    card.style.boxShadow = '';
+  });
+}
 
 // ── Background canvas ─────────────────────────────────────────
 function initBg() {

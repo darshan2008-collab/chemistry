@@ -145,7 +145,50 @@ body {
 .spinner { width:18px; height:18px; border:2.5px solid rgba(255,255,255,0.3); border-top-color:#fff; border-radius:50%; animation:spin .7s linear infinite; }
 @keyframes spin { to { transform:rotate(360deg); } }
 
-.login-note { margin-top:20px; text-align:center; font-size:0.78rem; color:var(--text-muted); line-height:1.5; }
+.login-note {
+  margin-top: 22px;
+  text-align: center;
+  font-size: 0.82rem;
+  line-height: 1.55;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: #ffffff;
+  padding: 10px 14px;
+  border-radius: 999px;
+  border: 1px solid rgba(255,255,255,0.2);
+  background: linear-gradient(120deg, rgba(124,58,237,0.26), rgba(6,182,212,0.24), rgba(244,63,94,0.25));
+  background-size: 220% 220%;
+  box-shadow: 0 0 0 rgba(124,58,237,0), 0 0 26px rgba(6,182,212,0.22), inset 0 0 20px rgba(255,255,255,0.08);
+  position: relative;
+  overflow: hidden;
+  animation: noteHue 3.4s ease-in-out infinite, noteGlow 2.3s ease-in-out infinite;
+}
+
+.login-note::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -120%;
+  width: 120%;
+  height: 100%;
+  background: linear-gradient(100deg, transparent, rgba(255,255,255,0.55), transparent);
+  animation: noteShine 2.2s linear infinite;
+}
+
+@keyframes noteHue {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+@keyframes noteGlow {
+  0%, 100% { box-shadow: 0 0 0 rgba(124,58,237,0), 0 0 18px rgba(6,182,212,0.18), inset 0 0 16px rgba(255,255,255,0.06); }
+  50% { box-shadow: 0 0 28px rgba(124,58,237,0.35), 0 0 36px rgba(6,182,212,0.26), inset 0 0 20px rgba(255,255,255,0.12); }
+}
+
+@keyframes noteShine {
+  0% { left: -120%; }
+  100% { left: 120%; }
+}
 
 /* ── Modal ──────────────────────────────────────────────────── */
 .modal-overlay {
@@ -190,6 +233,81 @@ body {
 .toast.show { transform:translateX(-50%) translateY(0); opacity:1; }
 .toast.success { border-color:#06b6d4; color:#06b6d4; }
 .toast.error { border-color:var(--accent2); color:var(--accent2); }
+
+.login-fx {
+  position: fixed;
+  inset: 0;
+  z-index: 150;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.25s ease;
+}
+
+.login-fx::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at 50% 50%, rgba(6,182,212,0.16), rgba(7,5,15,0.8) 60%, rgba(7,5,15,0.92));
+}
+
+.login-fx.show {
+  opacity: 1;
+}
+
+.fx-core {
+  position: relative;
+  z-index: 2;
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: clamp(1.5rem, 3.5vw, 2.4rem);
+  font-weight: 800;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: #d8fbff;
+  text-shadow: 0 0 22px rgba(6,182,212,0.65), 0 0 42px rgba(124,58,237,0.5);
+  animation: fxCorePulse 1.2s ease-in-out infinite;
+}
+
+.fx-ring {
+  position: absolute;
+  border: 1.5px solid rgba(167,139,250,0.55);
+  border-radius: 999px;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.8);
+  opacity: 0;
+}
+
+.fx-ring-1 {
+  width: 180px;
+  height: 180px;
+  animation: fxRing 1.3s ease-out infinite;
+}
+
+.fx-ring-2 {
+  width: 250px;
+  height: 250px;
+  border-color: rgba(6,182,212,0.48);
+  animation: fxRing 1.3s ease-out infinite 0.25s;
+}
+
+.fx-ring-3 {
+  width: 320px;
+  height: 320px;
+  border-color: rgba(244,63,94,0.4);
+  animation: fxRing 1.3s ease-out infinite 0.5s;
+}
+
+@keyframes fxCorePulse {
+  0%, 100% { transform: scale(1); opacity: 0.88; }
+  50% { transform: scale(1.06); opacity: 1; }
+}
+
+@keyframes fxRing {
+  0% { transform: translate(-50%, -50%) scale(0.72); opacity: 0.75; }
+  100% { transform: translate(-50%, -50%) scale(1.16); opacity: 0; }
+}
 
 @media (max-width:480px) {
   .login-card { padding:36px 18px; }
