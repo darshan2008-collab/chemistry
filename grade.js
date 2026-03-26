@@ -1,6 +1,17 @@
 // Get submission ID from URL or sessionStorage
 const urlParams = new URLSearchParams(window.location.search);
 const currentId = urlParams.get('id') || sessionStorage.getItem('currentGradeId');
+const staffSession = JSON.parse(sessionStorage.getItem('chemtest_staff') || 'null');
+
+if (!staffSession || !staffSession.token) {
+  window.location.href = 'login.html';
+}
+
+function staffAuthHeaders() {
+  const s = JSON.parse(sessionStorage.getItem('chemtest_staff') || 'null');
+  if (!s || !s.token) throw new Error('Unauthorized');
+  return { Authorization: `Bearer ${s.token}` };
+}
 
 let currentSubmission = null;
 
@@ -12,7 +23,9 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 
 async function apiGetSubmission(id) {
-  const res = await fetch(`/api/submissions/${encodeURIComponent(id)}`);
+  const res = await fetch(`/api/submissions/${encodeURIComponent(id)}`, {
+    headers: staffAuthHeaders(),
+  });
   if (!res.ok) throw new Error('Submission not found');
   const payload = await res.json();
   return payload.submission;
@@ -21,7 +34,10 @@ async function apiGetSubmission(id) {
 async function apiUpdateSubmission(id, updates) {
   const res = await fetch(`/api/submissions/${encodeURIComponent(id)}`, {
     method: 'PATCH',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      ...staffAuthHeaders(),
+    },
     body: JSON.stringify(updates),
   });
   if (!res.ok) throw new Error('Failed to save grade');

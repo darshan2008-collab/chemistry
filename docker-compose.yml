@@ -11,7 +11,7 @@ services:
       POSTGRES_PASSWORD: ${DB_PASSWORD}
     volumes:
       - type: bind
-        source: ${PROJECT_ROOT}/data/postgres
+        source: ${POSTGRES_ROOT}
         target: /var/lib/postgresql/data
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME} -h 127.0.0.1 -p 5432 || exit 1"]
@@ -39,6 +39,12 @@ services:
       UPLOAD_DIR: /data/uploads
       STUDENTS_FILE: /app/students-db.js
       RESYNC_TOKEN: ${RESYNC_TOKEN}
+      AUTH_PEPPER: ${AUTH_PEPPER}
+      AUTH_SESSION_TTL_HOURS: ${AUTH_SESSION_TTL_HOURS}
+      STAFF_DEFAULT_EMAIL: ${STAFF_DEFAULT_EMAIL}
+      STAFF_DEFAULT_PASSWORD: ${STAFF_DEFAULT_PASSWORD}
+      STAFF_DEFAULT_NAME: ${STAFF_DEFAULT_NAME}
+      STAFF_DEFAULT_ROLE: ${STAFF_DEFAULT_ROLE}
       DB_HOST: ${DB_HOST}
       DB_PORT: ${DB_PORT}
       DB_NAME: ${DB_NAME}

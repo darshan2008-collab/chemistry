@@ -2,6 +2,8 @@
 if (getStudentSession()) { window.location.href = 'index.html'; }
 
 let pendingRegNo = null; // holds reg no while password change modal is open
+let pendingToken = '';
+let pendingName = '';
 
 document.addEventListener('DOMContentLoaded', () => {
   initBg();
@@ -90,8 +92,16 @@ function initForm() {
     btn.querySelector('.btn-text').hidden = false;
     btn.querySelector('.btn-loader').hidden = true;
 
-    const storedPw = getStudentPassword(regNo);
-    if (pw !== storedPw) {
+    let payload;
+    try {
+      const res = await fetch('/api/auth/student/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ regNo, password: pw }),
+      });
+      if (!res.ok) throw new Error('Invalid credentials');
+      payload = await res.json();
+    } catch (_err) {
       document.getElementById('pwErr').textContent = 'Incorrect password';
       const card = document.querySelector('.login-card');
       card.classList.remove('shake');
@@ -106,16 +116,18 @@ function initForm() {
     document.getElementById('password').classList.remove('err-border');
 
     // First login? → force password change
-    if (!hasChangedPassword(regNo)) {
+    if (payload.mustChangePassword) {
       pendingRegNo = regNo;
+      pendingToken = payload.token;
+      pendingName = payload?.student?.name || STUDENTS_DB[regNo] || '';
       document.getElementById('changePwModal').classList.add('show');
       document.body.style.overflow = 'hidden';
       return;
     }
 
     // All good — set session and go
-    setStudentSession(regNo);
-    showToast('✅ Welcome, ' + STUDENTS_DB[regNo] + '!', 'success');
+    setStudentSession(regNo, payload.token, payload?.student?.name || STUDENTS_DB[regNo]);
+    showToast('✅ Welcome, ' + (payload?.student?.name || STUDENTS_DB[regNo]) + '!', 'success');
     setTimeout(() => { window.location.href = 'index.html'; }, 700);
   });
 
@@ -160,7 +172,7 @@ function getStrength(pw) {
   return Math.min(s, 3);
 }
 
-function saveNewPassword() {
+async function saveNewPassword() {
   const newPw = document.getElementById('newPw').value;
   const confirmPw = document.getElementById('confirmPw').value;
 
@@ -180,13 +192,23 @@ function saveNewPassword() {
     return;
   }
 
-  setStudentPassword(pendingRegNo, newPw);
-  markPasswordChanged(pendingRegNo);
+  const res = await fetch('/api/auth/student/password', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${pendingToken}`,
+    },
+    body: JSON.stringify({ newPassword: newPw }),
+  });
+  if (!res.ok) {
+    document.getElementById('newPwErr').textContent = 'Failed to update password';
+    return;
+  }
 
   document.getElementById('changePwModal').classList.remove('show');
   document.body.style.overflow = '';
 
-  setStudentSession(pendingRegNo);
+  setStudentSession(pendingRegNo, pendingToken, pendingName || STUDENTS_DB[pendingRegNo]);
   showToast('🎉 Password set! Redirecting…', 'success');
   setTimeout(() => { window.location.href = 'index.html'; }, 800);
 }

@@ -2,6 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 const { Pool } = require('pg');
 
 const app = express();
@@ -9,6 +10,13 @@ const port = Number(process.env.API_PORT || 3000);
 const uploadDir = process.env.UPLOAD_DIR || '/data/uploads';
 const studentsFile = process.env.STUDENTS_FILE || '/app/students-db.js';
 const resyncToken = process.env.RESYNC_TOKEN || '';
+const authPepper = process.env.AUTH_PEPPER || 'change_this_auth_pepper';
+const sessionTtlHours = Number(process.env.AUTH_SESSION_TTL_HOURS || 24);
+
+const staffDefaultEmail = (process.env.STAFF_DEFAULT_EMAIL || 'admin@chemtest.in').trim().toLowerCase();
+const staffDefaultPassword = process.env.STAFF_DEFAULT_PASSWORD || 'ChangeThisNow_2026!';
+const staffDefaultName = process.env.STAFF_DEFAULT_NAME || 'System Admin';
+const staffDefaultRole = process.env.STAFF_DEFAULT_ROLE || 'Chemistry Teacher';
 
 app.use(express.json({ limit: '1mb' }));
 
@@ -40,6 +48,7 @@ const pool = new Pool({
 });
 
 let dbReady = false;
+const sessions = new Map();
 
 fs.mkdirSync(uploadDir, { recursive: true });
 
@@ -67,6 +76,52 @@ const upload = multer({
   },
 });
 
+function hashPassword(value) {
+  return crypto.createHash('sha256').update(`${String(value)}:${authPepper}`).digest('hex');
+}
+
+function createSession(payload) {
+  const token = crypto.randomBytes(32).toString('hex');
+  const expiresAt = Date.now() + (Math.max(sessionTtlHours, 1) * 60 * 60 * 1000);
+  sessions.set(token, { ...payload, expiresAt });
+  return token;
+}
+
+function getSessionFromRequest(req) {
+  const header = req.header('authorization') || '';
+  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+  if (!token) return null;
+  const session = sessions.get(token);
+  if (!session) return null;
+  if (session.expiresAt <= Date.now()) {
+    sessions.delete(token);
+    return null;
+  }
+  return { token, ...session };
+}
+
+function requireAuth(roles) {
+  const allowedRoles = Array.isArray(roles) ? roles : [roles];
+  return (req, res, next) => {
+    const session = getSessionFromRequest(req);
+    if (!session) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    if (allowedRoles.length && !allowedRoles.includes(session.role)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    req.auth = session;
+    next();
+  };
+}
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [token, session] of sessions.entries()) {
+    if (session.expiresAt <= now) sessions.delete(token);
+  }
+}, 60 * 1000).unref();
+
 app.get('/health', async (_req, res) => {
   try {
     await pool.query('SELECT 1');
@@ -76,7 +131,112 @@ app.get('/health', async (_req, res) => {
   }
 });
 
-app.get('/students/count', async (_req, res) => {
+app.post('/auth/student/login', async (req, res, next) => {
+  try {
+    const regNo = String(req.body?.regNo || '').trim().toUpperCase();
+    const password = String(req.body?.password || '');
+    if (!regNo || !password) {
+      return res.status(400).json({ error: 'Missing credentials' });
+    }
+
+    const result = await pool.query(
+      `SELECT s.reg_no, s.full_name, a.password_hash, a.password_changed
+       FROM students s
+       JOIN student_auth a ON a.reg_no = s.reg_no
+       WHERE s.reg_no = $1`,
+      [regNo]
+    );
+    if (!result.rows.length) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const row = result.rows[0];
+    if (hashPassword(password) !== row.password_hash) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const token = createSession({ role: 'student', regNo: row.reg_no, name: row.full_name });
+    res.json({
+      token,
+      student: { regNo: row.reg_no, name: row.full_name },
+      mustChangePassword: !row.password_changed,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/auth/student/password', requireAuth('student'), async (req, res, next) => {
+  try {
+    const newPassword = String(req.body?.newPassword || '');
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    await pool.query(
+      `UPDATE student_auth
+       SET password_hash = $1, password_changed = TRUE, updated_at = NOW()
+       WHERE reg_no = $2`,
+      [hashPassword(newPassword), req.auth.regNo]
+    );
+
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/auth/staff/login', async (req, res, next) => {
+  try {
+    const email = String(req.body?.email || '').trim().toLowerCase();
+    const password = String(req.body?.password || '');
+    if (!email || !password) {
+      return res.status(400).json({ error: 'Missing credentials' });
+    }
+
+    const result = await pool.query(
+      `SELECT email, full_name, role, password_hash
+       FROM staff_accounts
+       WHERE email = $1 AND is_active = TRUE`,
+      [email]
+    );
+    if (!result.rows.length) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const row = result.rows[0];
+    if (hashPassword(password) !== row.password_hash) {
+      return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    const token = createSession({ role: 'staff', email: row.email, name: row.full_name });
+    res.json({ token, staff: { email: row.email, name: row.full_name, role: row.role } });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/auth/staff/password', requireAuth('staff'), async (req, res, next) => {
+  try {
+    const newPassword = String(req.body?.newPassword || '');
+    if (newPassword.length < 6) {
+      return res.status(400).json({ error: 'Password must be at least 6 characters' });
+    }
+
+    await pool.query(
+      `UPDATE staff_accounts
+       SET password_hash = $1, updated_at = NOW()
+       WHERE email = $2`,
+      [hashPassword(newPassword), req.auth.email]
+    );
+
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/students/count', requireAuth(['staff', 'student']), async (_req, res) => {
   const result = await pool.query('SELECT COUNT(*)::int AS count FROM students');
   res.json({ count: result.rows[0].count });
 });
@@ -102,21 +262,29 @@ function normalizeSubmissionRow(row) {
   };
 }
 
-app.get('/submissions', async (req, res, next) => {
+app.get('/submissions', requireAuth(['staff', 'student']), async (req, res, next) => {
   try {
-    const rollNumber = String(req.query.rollNumber || '').trim();
+    const rollNumberQuery = String(req.query.rollNumber || '').trim();
     const includeArchived = String(req.query.includeArchived || 'true').toLowerCase() === 'true';
     const status = String(req.query.status || '').trim();
 
     const where = [];
     const params = [];
-    if (rollNumber) {
-      params.push(rollNumber);
+
+    if (req.auth.role === 'student') {
+      params.push(req.auth.regNo);
       where.push(`roll_number = $${params.length}`);
-    }
-    if (!includeArchived) {
       where.push('archived = FALSE');
+    } else {
+      if (rollNumberQuery) {
+        params.push(rollNumberQuery);
+        where.push(`roll_number = $${params.length}`);
+      }
+      if (!includeArchived) {
+        where.push('archived = FALSE');
+      }
     }
+
     if (status) {
       params.push(status);
       where.push(`status = $${params.length}`);
@@ -136,27 +304,37 @@ app.get('/submissions', async (req, res, next) => {
   }
 });
 
-app.get('/submissions/:id', async (req, res, next) => {
+app.get('/submissions/:id', requireAuth(['staff', 'student']), async (req, res, next) => {
   try {
     const result = await pool.query('SELECT * FROM submissions WHERE id = $1', [req.params.id]);
     if (!result.rows.length) {
       return res.status(404).json({ error: 'Submission not found' });
     }
-    res.json({ submission: normalizeSubmissionRow(result.rows[0]) });
+
+    const submission = normalizeSubmissionRow(result.rows[0]);
+    if (req.auth.role === 'student' && submission.rollNumber !== req.auth.regNo) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    res.json({ submission });
   } catch (err) {
     next(err);
   }
 });
 
-app.post('/submissions', async (req, res, next) => {
+app.post('/submissions', requireAuth('student'), async (req, res, next) => {
   try {
     const body = req.body || {};
     const id = String(body.id || '').trim();
     const studentName = String(body.studentName || '').trim();
     const rollNumber = String(body.rollNumber || '').trim();
     const testTitle = String(body.testTitle || '').trim();
+
     if (!id || !studentName || !rollNumber || !testTitle) {
       return res.status(400).json({ error: 'Missing required fields' });
+    }
+    if (rollNumber !== req.auth.regNo) {
+      return res.status(403).json({ error: 'Forbidden' });
     }
 
     const submissionValues = [
@@ -200,7 +378,7 @@ app.post('/submissions', async (req, res, next) => {
   }
 });
 
-app.patch('/submissions/:id', async (req, res, next) => {
+app.patch('/submissions/:id', requireAuth('staff'), async (req, res, next) => {
   try {
     const body = req.body || {};
     const editable = {
@@ -259,7 +437,7 @@ app.patch('/submissions/:id', async (req, res, next) => {
   }
 });
 
-app.post('/submissions/archive-all', async (_req, res, next) => {
+app.post('/submissions/archive-all', requireAuth('staff'), async (_req, res, next) => {
   try {
     const result = await pool.query(
       'UPDATE submissions SET archived = TRUE, updated_at = NOW() WHERE archived = FALSE RETURNING id'
@@ -270,7 +448,7 @@ app.post('/submissions/archive-all', async (_req, res, next) => {
   }
 });
 
-app.delete('/submissions/:id', async (req, res, next) => {
+app.delete('/submissions/:id', requireAuth('staff'), async (req, res, next) => {
   try {
     const result = await pool.query('DELETE FROM submissions WHERE id = $1 RETURNING id', [req.params.id]);
     if (!result.rows.length) {
@@ -282,7 +460,7 @@ app.delete('/submissions/:id', async (req, res, next) => {
   }
 });
 
-app.post('/upload', upload.array('files', 20), async (req, res, next) => {
+app.post('/upload', requireAuth('student'), upload.array('files', 20), async (req, res, next) => {
   const files = (req.files || []).map((file) => ({
     originalName: file.originalname,
     name: file.filename,
@@ -325,13 +503,6 @@ app.post('/upload', upload.array('files', 20), async (req, res, next) => {
   }
 });
 
-app.use((err, _req, res, _next) => {
-  if (err && err.code === 'LIMIT_FILE_SIZE') {
-    return res.status(413).json({ error: 'File too large (max 15MB)' });
-  }
-  res.status(500).json({ error: 'Upload failed' });
-});
-
 function parseStudentsFromFile(filePath) {
   const raw = fs.readFileSync(filePath, 'utf8');
   const match = raw.match(/const\s+STUDENTS_DB\s*=\s*(\{[\s\S]*?\});/);
@@ -340,16 +511,38 @@ function parseStudentsFromFile(filePath) {
   }
 
   const objectLiteral = match[1];
-  // Trusted local source file; this converts JS object literal to runtime object.
   return Function(`"use strict"; return (${objectLiteral});`)();
 }
 
 async function ensureSchema() {
+  await pool.query('CREATE EXTENSION IF NOT EXISTS pgcrypto');
+
   await pool.query(`
     CREATE TABLE IF NOT EXISTS students (
       reg_no TEXT PRIMARY KEY,
       full_name TEXT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS student_auth (
+      reg_no TEXT PRIMARY KEY REFERENCES students(reg_no) ON DELETE CASCADE,
+      password_hash TEXT NOT NULL,
+      password_changed BOOLEAN NOT NULL DEFAULT FALSE,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS staff_accounts (
+      email TEXT PRIMARY KEY,
+      full_name TEXT NOT NULL,
+      role TEXT NOT NULL,
+      password_hash TEXT NOT NULL,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
 
@@ -392,22 +585,10 @@ async function ensureSchema() {
   await pool.query('CREATE INDEX IF NOT EXISTS idx_submissions_submitted_at ON submissions (submitted_at DESC)');
 }
 
-async function seedStudentsIfEmpty() {
-  const countResult = await pool.query('SELECT COUNT(*)::int AS count FROM students');
-  if (countResult.rows[0].count > 0) {
-    return;
-  }
-
-  const result = await syncStudentsFromFile();
-  console.log(`Initial student seed completed. Inserted: ${result.inserted}, Updated: ${result.updated}, Total source: ${result.total}`);
-}
-
 async function syncStudentsFromFile() {
   const students = parseStudentsFromFile(studentsFile);
   const entries = Object.entries(students);
-  if (!entries.length) {
-    return { inserted: 0, updated: 0, total: 0 };
-  }
+  if (!entries.length) return { inserted: 0, updated: 0, total: 0 };
 
   let inserted = 0;
   let updated = 0;
@@ -416,7 +597,7 @@ async function syncStudentsFromFile() {
   try {
     await client.query('BEGIN');
     for (const [regNo, fullName] of entries) {
-      const result = await client.query(
+      const upsertStudent = await client.query(
         `INSERT INTO students (reg_no, full_name)
          VALUES ($1, $2)
          ON CONFLICT (reg_no) DO UPDATE SET full_name = EXCLUDED.full_name
@@ -424,11 +605,15 @@ async function syncStudentsFromFile() {
         [regNo, fullName]
       );
 
-      if (result.rows[0].inserted) {
-        inserted += 1;
-      } else {
-        updated += 1;
-      }
+      await client.query(
+        `INSERT INTO student_auth (reg_no, password_hash, password_changed)
+         VALUES ($1, $2, FALSE)
+         ON CONFLICT (reg_no) DO NOTHING`,
+        [regNo, hashPassword(regNo)]
+      );
+
+      if (upsertStudent.rows[0].inserted) inserted += 1;
+      else updated += 1;
     }
     await client.query('COMMIT');
     console.log(`Synced ${entries.length} students from ${studentsFile}`);
@@ -439,14 +624,47 @@ async function syncStudentsFromFile() {
     client.release();
   }
 
-  return {
-    inserted,
-    updated,
-    total: entries.length,
-  };
+  return { inserted, updated, total: entries.length };
 }
 
-app.post('/students/resync', async (req, res, next) => {
+async function seedStaffIfEmpty() {
+  const result = await pool.query('SELECT COUNT(*)::int AS count FROM staff_accounts');
+  if (result.rows[0].count > 0) return;
+
+  await pool.query(
+    `INSERT INTO staff_accounts (email, full_name, role, password_hash, is_active)
+     VALUES ($1, $2, $3, $4, TRUE)`,
+    [staffDefaultEmail, staffDefaultName, staffDefaultRole, hashPassword(staffDefaultPassword)]
+  );
+  console.log(`Seeded default staff account: ${staffDefaultEmail}`);
+}
+
+async function seedStudentsIfEmpty() {
+  const countResult = await pool.query('SELECT COUNT(*)::int AS count FROM students');
+  if (countResult.rows[0].count > 0) {
+    return;
+  }
+
+  const result = await syncStudentsFromFile();
+  console.log(`Initial student seed completed. Inserted: ${result.inserted}, Updated: ${result.updated}, Total source: ${result.total}`);
+}
+
+async function backfillMissingStudentAuth() {
+  const result = await pool.query(
+    `INSERT INTO student_auth (reg_no, password_hash, password_changed)
+     SELECT s.reg_no, encode(digest(s.reg_no || ':' || $1, 'sha256'), 'hex'), FALSE
+     FROM students s
+     LEFT JOIN student_auth a ON a.reg_no = s.reg_no
+     WHERE a.reg_no IS NULL`,
+    [authPepper]
+  );
+
+  if (result.rowCount > 0) {
+    console.log(`Backfilled ${result.rowCount} missing student_auth rows`);
+  }
+}
+
+app.post('/students/resync', requireAuth('staff'), async (req, res, next) => {
   try {
     if (resyncToken) {
       const provided = req.header('x-resync-token') || '';
@@ -466,13 +684,23 @@ app.post('/students/resync', async (req, res, next) => {
   }
 });
 
+app.use((err, _req, res, _next) => {
+  if (err && err.code === 'LIMIT_FILE_SIZE') {
+    return res.status(413).json({ error: 'File too large (max 15MB)' });
+  }
+  console.error('API error:', err);
+  res.status(500).json({ error: 'Server error' });
+});
+
 async function bootstrap() {
   await ensureSchema();
   await seedStudentsIfEmpty();
+  await backfillMissingStudentAuth();
+  await seedStaffIfEmpty();
   dbReady = true;
 
   app.listen(port, '0.0.0.0', () => {
-    console.log(`Upload API listening on ${port}`);
+    console.log(`API listening on ${port}`);
   });
 }
 

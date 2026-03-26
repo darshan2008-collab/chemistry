@@ -101,12 +101,28 @@ function getStudentSession() {
   try { return JSON.parse(sessionStorage.getItem('chemtest_student') || 'null'); }
   catch { return null; }
 }
-function setStudentSession(regNo) {
+function setStudentSession(regNo, token = null, nameOverride = null) {
   sessionStorage.setItem('chemtest_student', JSON.stringify({
-    regNo, name: STUDENTS_DB[regNo], loggedInAt: new Date().toISOString()
+    regNo,
+    name: nameOverride || STUDENTS_DB[regNo],
+    token,
+    loggedInAt: new Date().toISOString()
   }));
 }
 function clearStudentSession() { sessionStorage.removeItem('chemtest_student'); }
 function requireStudentAuth() {
-  if (!getStudentSession()) { window.location.href = 'login.html'; }
+  const s = getStudentSession();
+  if (!s || !s.token) { window.location.href = 'login.html'; }
 }
+
+function getStaffSession() {
+  try { return JSON.parse(sessionStorage.getItem('chemtest_staff') || 'null'); }
+  catch { return null; }
+}
+function setStaffSession(staff) {
+  sessionStorage.setItem('chemtest_staff', JSON.stringify({
+    ...staff,
+    loggedInAt: new Date().toISOString(),
+  }));
+}
+function clearStaffSession() { sessionStorage.removeItem('chemtest_staff'); }

@@ -1,24 +1,38 @@
 // ── Auth Guard ────────────────────────────────────────────────
 const staff = JSON.parse(sessionStorage.getItem('chemtest_staff') || 'null');
-if (!staff) { window.location.href = 'login.html'; }
+if (!staff || !staff.token) { window.location.href = 'login.html'; }
+
+function getStaffAuthHeaders() {
+  const s = JSON.parse(sessionStorage.getItem('chemtest_staff') || 'null');
+  if (!s || !s.token) throw new Error('Unauthorized');
+  return { Authorization: `Bearer ${s.token}` };
+}
 
 let submissionsCache = [];
 const getSubmissions = () => submissionsCache;
 
 async function apiFetchSubmissions() {
-  const res = await fetch('/api/submissions?includeArchived=true');
+  const res = await fetch('/api/submissions?includeArchived=true', {
+    headers: getStaffAuthHeaders(),
+  });
   if (!res.ok) throw new Error('Failed to load submissions');
   const payload = await res.json();
   return payload.submissions || [];
 }
 
 async function apiArchiveAllSubmissions() {
-  const res = await fetch('/api/submissions/archive-all', { method: 'POST' });
+  const res = await fetch('/api/submissions/archive-all', {
+    method: 'POST',
+    headers: getStaffAuthHeaders(),
+  });
   if (!res.ok) throw new Error('Failed to archive submissions');
 }
 
 async function apiDeleteSubmission(id) {
-  const res = await fetch(`/api/submissions/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  const res = await fetch(`/api/submissions/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+    headers: getStaffAuthHeaders(),
+  });
   if (!res.ok) throw new Error('Failed to delete submission');
 }
 
@@ -179,6 +193,7 @@ function renderDashboard() {
 
   const recent = [...all].sort((a,b) => new Date(b.submittedAt)-new Date(a.submittedAt)).slice(0,5);
   const el = document.getElementById('recentSubmissions');
+  if (!el) return;
   el.innerHTML = '';
   if (!recent.length) { el.innerHTML = emptyHTML('No submissions yet'); return; }
   recent.forEach(s => el.appendChild(buildCard(s)));
@@ -330,10 +345,22 @@ window.changeOwnPassword = function() {
     showToast('❌ Password must be at least 6 characters', 'error');
     return;
   }
-  const customPws = JSON.parse(localStorage.getItem('chemtest_staff_custom_pws') || '{}');
-  customPws[staff.email] = pw;
-  localStorage.setItem('chemtest_staff_custom_pws', JSON.stringify(customPws));
-  showToast('✅ Your password has been changed successfully!', 'success');
+  (async () => {
+    try {
+      const res = await fetch('/api/auth/staff/password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getStaffAuthHeaders(),
+        },
+        body: JSON.stringify({ newPassword: pw }),
+      });
+      if (!res.ok) throw new Error('Failed to update password');
+      showToast('✅ Your password has been changed successfully!', 'success');
+    } catch (_err) {
+      showToast('⚠️ Failed to update password', 'error');
+    }
+  })();
 };
 
 // ── Delete Individual Test (Staff Only) ───────────────────────

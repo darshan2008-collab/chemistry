@@ -1,11 +1,6 @@
-// ── Staff accounts ────────────────────────────────────────────
-const STAFF = [
-  { username: 'Shreekesavan', password: 'Kesavan@123', name: 'Shreekesavan', role: 'Chemistry Teacher' },
-];
-
 // ── Reidrect if already logged in ─────────────────────────────
 if (getStudentSession())                                       window.location.replace('index.html');
-if (sessionStorage.getItem('chemtest_staff'))                  window.location.replace('staff-dashboard.html');
+if (getStaffSession())                                         window.location.replace('staff-dashboard.html');
 
 // ── Init ──────────────────────────────────────────────────────
 document.addEventListener('DOMContentLoaded', () => {
@@ -77,6 +72,8 @@ function switchTab(tab) {
 
 // ── Student form ──────────────────────────────────────────────
 let pendingRegNo = null;
+let pendingStudentToken = '';
+let pendingStudentName = '';
 
 function initStudentForm() {
   // Auto-uppercase register number as user types
@@ -87,7 +84,7 @@ function initStudentForm() {
     regInput.setSelectionRange(pos, pos);
   });
 
-  document.getElementById('studentForm').addEventListener('submit', e => {
+  document.getElementById('studentForm').addEventListener('submit', async e => {
     e.preventDefault();
     const regNo = document.getElementById('sRegNo').value.trim().toUpperCase();
     const pw    = document.getElementById('sPw').value;
@@ -100,33 +97,34 @@ function initStudentForm() {
     if (!pw) { document.getElementById('sPwErr').textContent = 'Enter your password'; return; }
 
 
-    if (pw !== getStudentPassword(regNo)) {
-      // Also allow case-insensitive match against default password (register number)
-      const storedPw = getStudentPassword(regNo);
-      if (pw.toUpperCase() !== storedPw.toUpperCase()) {
-        document.getElementById('sPwErr').textContent = 'Incorrect password';
-        showToast('❌ Wrong password', 'bad'); return;
-      }
-    }
-    document.getElementById('sPwErr').textContent = '';
+    try {
+      const payload = await apiStudentLogin(regNo, pw);
+      document.getElementById('sPwErr').textContent = '';
 
-    if (!hasChangedPassword(regNo)) {
-      pendingRegNo = regNo;
-      document.getElementById('changePwOverlay').classList.add('show');
-      document.body.style.overflow = 'hidden';
-      return;
+      if (payload.mustChangePassword) {
+        pendingRegNo = regNo;
+        pendingStudentToken = payload.token;
+        pendingStudentName = payload?.student?.name || STUDENTS_DB[regNo] || '';
+        document.getElementById('changePwOverlay').classList.add('show');
+        document.body.style.overflow = 'hidden';
+        return;
+      }
+
+      setStudentSession(regNo, payload.token, payload?.student?.name || STUDENTS_DB[regNo]);
+      showToast('✅ Welcome, ' + (payload?.student?.name || STUDENTS_DB[regNo]) + '!', 'ok');
+      setTimeout(() => window.location.href = 'index.html', 700);
+    } catch (_err) {
+      document.getElementById('sPwErr').textContent = 'Incorrect password';
+      showToast('❌ Wrong password', 'bad');
     }
-    setStudentSession(regNo);
-    showToast('✅ Welcome, ' + STUDENTS_DB[regNo] + '!', 'ok');
-    setTimeout(() => window.location.href = 'index.html', 700);
   });
 }
 
 // ── Staff form ────────────────────────────────────────────────
 function initStaffForm() {
-  document.getElementById('staffForm').addEventListener('submit', e => {
+  document.getElementById('staffForm').addEventListener('submit', async e => {
     e.preventDefault();
-    const username = document.getElementById('fEmail').value.trim();
+    const username = document.getElementById('fEmail').value.trim().toLowerCase();
     const pw       = document.getElementById('fPw').value;
 
     if (!username) {
@@ -134,21 +132,23 @@ function initStaffForm() {
     }
     if (!pw) { document.getElementById('fPwErr').textContent = 'Enter your password'; return; }
 
+    try {
+      const payload = await apiStaffLogin(username, pw);
+      document.getElementById('fEmailErr').textContent = '';
+      document.getElementById('fPwErr').textContent = '';
 
-    const account = STAFF.find(a => a.username === username && a.password === pw);
-    if (!account) {
+      setStaffSession({
+        email: payload.staff.email,
+        name: payload.staff.name,
+        role: payload.staff.role,
+        token: payload.token,
+      });
+      showToast('✅ Welcome, ' + payload.staff.name + '!', 'ok');
+      setTimeout(() => window.location.href = 'staff-dashboard.html', 700);
+    } catch (_err) {
       document.getElementById('fPwErr').textContent = 'Invalid credentials';
-      showToast('❌ Invalid username or password', 'bad'); return;
+      showToast('❌ Invalid username or password', 'bad');
     }
-    document.getElementById('fEmailErr').textContent = '';
-    document.getElementById('fPwErr').textContent = '';
-
-    sessionStorage.setItem('chemtest_staff', JSON.stringify({
-      username: account.username, name: account.name, role: account.role,
-      loggedInAt: new Date().toISOString(),
-    }));
-    showToast('✅ Welcome, ' + account.name + '!', 'ok');
-    setTimeout(() => window.location.href = 'staff-dashboard.html', 700);
   });
 }
 
@@ -180,14 +180,18 @@ function initChangePwModal() {
     if (np !== cp)            { document.getElementById('confirmPwErr').textContent = 'Passwords do not match'; return; }
     if (np === pendingRegNo)  { document.getElementById('newPwErr').textContent = 'Choose a different password'; return; }
 
-    setStudentPassword(pendingRegNo, np);
-    markPasswordChanged(pendingRegNo);
-    document.getElementById('changePwOverlay').classList.remove('show');
-    document.body.style.overflow = '';
+    apiStudentChangePassword(np, pendingStudentToken)
+      .then(() => {
+        document.getElementById('changePwOverlay').classList.remove('show');
+        document.body.style.overflow = '';
 
-    setStudentSession(pendingRegNo);
-    showToast('🎉 Password set! Redirecting…', 'ok');
-    setTimeout(() => window.location.href = 'index.html', 750);
+        setStudentSession(pendingRegNo, pendingStudentToken, pendingStudentName || STUDENTS_DB[pendingRegNo]);
+        showToast('🎉 Password set! Redirecting…', 'ok');
+        setTimeout(() => window.location.href = 'index.html', 750);
+      })
+      .catch(() => {
+        document.getElementById('newPwErr').textContent = 'Failed to update password';
+      });
   });
 }
 
@@ -221,6 +225,39 @@ function pwStrength(v) {
   return Math.min(s, 3);
 }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+async function apiStudentLogin(regNo, password) {
+  const res = await fetch('/api/auth/student/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ regNo, password }),
+  });
+  if (!res.ok) throw new Error('Student login failed');
+  return res.json();
+}
+
+async function apiStudentChangePassword(newPassword, token) {
+  const res = await fetch('/api/auth/student/password', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ newPassword }),
+  });
+  if (!res.ok) throw new Error('Student password change failed');
+  return res.json();
+}
+
+async function apiStaffLogin(email, password) {
+  const res = await fetch('/api/auth/staff/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email, password }),
+  });
+  if (!res.ok) throw new Error('Staff login failed');
+  return res.json();
+}
 
 let _toastT;
 function showToast(msg, type = '') {

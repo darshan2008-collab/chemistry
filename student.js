@@ -4,20 +4,34 @@ requireStudentAuth();
 
 const DB_KEY = 'chemtest_submissions';
 
+function getStudentAuthTokenOrThrow() {
+  const session = getStudentSession();
+  const token = session?.token || '';
+  if (!token) throw new Error('Unauthorized');
+  return token;
+}
+
 async function fetchSubmissions({ rollNumber, includeArchived = false } = {}) {
+  const token = getStudentAuthTokenOrThrow();
   const params = new URLSearchParams();
   if (rollNumber) params.set('rollNumber', rollNumber);
   params.set('includeArchived', String(includeArchived));
-  const res = await fetch(`/api/submissions?${params.toString()}`);
+  const res = await fetch(`/api/submissions?${params.toString()}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  });
   if (!res.ok) throw new Error('Failed to load submissions');
   const payload = await res.json();
   return payload.submissions || [];
 }
 
 async function createSubmission(submission) {
+  const token = getStudentAuthTokenOrThrow();
   const res = await fetch('/api/submissions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${token}`,
+    },
     body: JSON.stringify(submission),
   });
   if (!res.ok) throw new Error('Failed to save submission');
@@ -334,6 +348,7 @@ function fileToBase64(file) { return new Promise(r=>{const rd=new FileReader(); 
 function escapeHtml(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 function uploadFiles(files, onProgress) {
+  const token = getStudentAuthTokenOrThrow();
   const form = new FormData();
   files.forEach(f => form.append('files', f));
   const fallbackTotalBytes = files.reduce((sum, file) => sum + (Number(file.size) || 0), 0);
@@ -341,6 +356,7 @@ function uploadFiles(files, onProgress) {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/upload', true);
+    xhr.setRequestHeader('Authorization', `Bearer ${token}`);
 
     let lastLoaded = 0;
     let lastTs = Date.now();

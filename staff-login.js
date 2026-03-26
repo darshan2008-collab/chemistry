@@ -1,9 +1,3 @@
-// ── Staff Accounts (hardcoded for demo) ──────────────────────
-const STAFF_ACCOUNTS = [
-  { email: 'admin@chemtest.in', password: 'admin123', name: 'Dr. Admin', role: 'Head of Department' },
-  { email: 'teacher@school.edu', password: 'teacher123', name: 'Prof. Teacher', role: 'Chemistry Teacher' },
-];
-
 document.addEventListener('DOMContentLoaded', () => {
   initBg();
   initForm();
@@ -70,20 +64,23 @@ function initForm() {
     const email = document.getElementById('email').value.trim().toLowerCase();
     const pw = document.getElementById('password').value;
 
-    const customPws = JSON.parse(localStorage.getItem('chemtest_staff_custom_pws') || '{}');
-    const account = STAFF_ACCOUNTS.find(a => {
-      const activePw = customPws[a.email] || a.password;
-      return a.email === email && activePw === pw;
-    });
-
     btn.disabled = false;
     btn.querySelector('.btn-text').hidden = false;
     btn.querySelector('.btn-loader').hidden = true;
 
-    if (!account) {
+    let payload;
+    try {
+      const res = await fetch('/api/auth/staff/login', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password: pw }),
+      });
+      if (!res.ok) throw new Error('Invalid credentials');
+      payload = await res.json();
+    } catch (_err) {
       const card = document.querySelector('.login-card');
       card.classList.remove('shake');
-      void card.offsetWidth; // trigger reflow
+      void card.offsetWidth;
       card.classList.add('shake');
       if (window.navigator.vibrate) window.navigator.vibrate(200);
       showToast('❌ Invalid email or password', 'error');
@@ -98,9 +95,11 @@ function initForm() {
       localStorage.removeItem('chemtest_staff_email');
     }
 
-    // Store session
     sessionStorage.setItem('chemtest_staff', JSON.stringify({
-      email: account.email, name: account.name, role: account.role,
+      email: payload.staff.email,
+      name: payload.staff.name,
+      role: payload.staff.role,
+      token: payload.token,
       loggedInAt: new Date().toISOString(),
     }));
 
