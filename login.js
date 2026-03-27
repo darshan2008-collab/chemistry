@@ -8,6 +8,14 @@ bootstrapAuthRedirect();
 function canOpenLoginPageDirectly() {
   if (hasAnyActiveSession()) return true;
 
+  const url = new URL(window.location.href);
+  if (url.searchParams.get('splash') === '1') {
+    url.searchParams.delete('splash');
+    const cleanUrl = `${url.pathname}${url.search}${url.hash}`;
+    window.history.replaceState({}, '', cleanUrl);
+    return true;
+  }
+
   try {
     const splashAccess = sessionStorage.getItem('chemtest_prelogin_ok');
     if (splashAccess === '1') {

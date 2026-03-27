@@ -18,7 +18,7 @@
             // Ignore storage errors and continue navigation.
         }
 
-        window.location.replace('login.html');
+        window.location.replace('login.html?splash=1');
     }
 
     requestAnimationFrame(frame);
