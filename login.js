@@ -1,5 +1,37 @@
-// ── Reidrect if already logged in ─────────────────────────────
+// ── Splash gate + redirect if already logged in ───────────────
+if (!canOpenLoginPageDirectly()) {
+  window.location.replace('splash.html');
+}
+
 bootstrapAuthRedirect();
+
+function canOpenLoginPageDirectly() {
+  if (hasAnyActiveSession()) return true;
+
+  try {
+    const splashAccess = sessionStorage.getItem('chemtest_prelogin_ok');
+    if (splashAccess === '1') {
+      sessionStorage.removeItem('chemtest_prelogin_ok');
+      return true;
+    }
+  } catch (_err) {
+    return false;
+  }
+
+  return false;
+}
+
+function hasAnyActiveSession() {
+  try {
+    return Boolean(
+      sessionStorage.getItem('chemtest_student') ||
+      sessionStorage.getItem('chemtest_staff') ||
+      sessionStorage.getItem('chemtest_superadmin')
+    );
+  } catch (_err) {
+    return false;
+  }
+}
 
 async function bootstrapAuthRedirect() {
   const student = getStudentSession();
