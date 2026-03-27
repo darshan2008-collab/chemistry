@@ -5,6 +5,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { Pool } = require('pg');
 const XLSX = require('xlsx');
+const ExcelJS = require('exceljs');
 
 const app = express();
 const port = Number(process.env.API_PORT || 3000);
@@ -552,17 +553,13 @@ async function rebuildGradedReportWorkbook() {
       const latestSubmission = (submissionsByRoll.get(regNo) || [])[0] || null;
 
       rows.push({
-        'Student Name': student.full_name,
+        Name: student.full_name,
         'Register Number': student.reg_no,
-        'Topic Name': latestSubmission?.test_title || '',
-        Subject: latestSubmission?.subject || '',
-        Classroom: latestSubmission?.classroom || '',
-        Status: latestSubmission?.status || 'not submitted',
-        Mark: latestSubmission && latestSubmission.marks !== null ? Number(latestSubmission.marks) : '',
-        'Total Marks': latestSubmission && latestSubmission.total_marks !== null ? Number(latestSubmission.total_marks) : '',
-        'Submitted At': latestSubmission?.submitted_at ? new Date(latestSubmission.submitted_at).toISOString() : '',
-        'Graded At': latestSubmission?.graded_at ? new Date(latestSubmission.graded_at).toISOString() : '',
+        Topic: latestSubmission?.test_title || '',
         Section: latestSubmission?.section || student.section || 'Unspecified Section',
+        Status: latestSubmission?.status || 'not submitted',
+        'Obtain Mark': latestSubmission && latestSubmission.marks !== null ? Number(latestSubmission.marks) : '',
+        'Total Marks': latestSubmission && latestSubmission.total_marks !== null ? Number(latestSubmission.total_marks) : '',
       });
     }
 
@@ -573,12 +570,45 @@ async function rebuildGradedReportWorkbook() {
         .trim()
         .slice(0, 31) || 'Sheet';
 
-    const workbook = XLSX.utils.book_new();
+    const reportColumns = [
+      { header: 'Name', key: 'Name' },
+      { header: 'Register Number', key: 'Register Number' },
+      { header: 'Topic', key: 'Topic' },
+      { header: 'Section', key: 'Section' },
+      { header: 'Status', key: 'Status' },
+      { header: 'Obtain Mark', key: 'Obtain Mark' },
+      { header: 'Total Marks', key: 'Total Marks' },
+    ];
 
-    const allSheet = XLSX.utils.json_to_sheet(rows, {
-      header: ['Student Name', 'Register Number', 'Topic Name', 'Subject', 'Classroom', 'Status', 'Mark', 'Total Marks', 'Submitted At', 'Graded At', 'Section'],
-    });
-    XLSX.utils.book_append_sheet(workbook, allSheet, 'All Students');
+    const workbook = new ExcelJS.Workbook();
+
+    const addFormattedSheet = (sheetName, sheetRows) => {
+      const worksheet = workbook.addWorksheet(sheetName);
+      worksheet.columns = reportColumns.map((column) => ({
+        header: column.header,
+        key: column.key,
+        width: column.header.length + 2,
+      }));
+
+      worksheet.addRows(sheetRows);
+
+      const headerRow = worksheet.getRow(1);
+      headerRow.font = { bold: true };
+      headerRow.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+
+      for (const column of worksheet.columns) {
+        const headerLength = String(column.header || '').length;
+        let maxLength = headerLength;
+        column.eachCell({ includeEmpty: true }, (cell, rowNumber) => {
+          if (rowNumber === 1) return;
+          const cellValue = cell.value == null ? '' : String(cell.value);
+          if (cellValue.length > maxLength) maxLength = cellValue.length;
+        });
+        column.width = Math.min(50, Math.max(12, maxLength + 2));
+      }
+    };
+
+    addFormattedSheet('All Students', rows);
 
     const grouped = new Map();
     for (const row of rows) {
@@ -600,21 +630,16 @@ async function rebuildGradedReportWorkbook() {
       usedNames.add(sheetName);
 
       const sheetRows = groupRows.map((r) => ({
-        'Student Name': r['Student Name'],
+        Name: r.Name,
         'Register Number': r['Register Number'],
-        'Topic Name': r['Topic Name'],
-        Status: r.Status,
-        Mark: r.Mark,
-        'Total Marks': r['Total Marks'],
-        'Submitted At': r['Submitted At'],
-        'Graded At': r['Graded At'],
+        Topic: r.Topic,
         Section: r.Section,
+        Status: r.Status,
+        'Obtain Mark': r['Obtain Mark'],
+        'Total Marks': r['Total Marks'],
       }));
 
-      const worksheet = XLSX.utils.json_to_sheet(sheetRows, {
-        header: ['Student Name', 'Register Number', 'Topic Name', 'Status', 'Mark', 'Total Marks', 'Submitted At', 'Graded At', 'Section'],
-      });
-      XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+      addFormattedSheet(sheetName, sheetRows);
     }
 
     // Explicit class-wise sheets (A7/A3 etc.) sourced from DB student section values.
@@ -631,7 +656,7 @@ async function rebuildGradedReportWorkbook() {
     }
 
     for (const [section, sectionRows] of sectionGroups.entries()) {
-      const baseName = sanitizeSheetName(`Section ${section}`);
+      const baseName = sanitizeSheetName(section);
       let sheetName = baseName;
       let suffix = 1;
       while (usedNames.has(sheetName)) {
@@ -642,23 +667,19 @@ async function rebuildGradedReportWorkbook() {
       usedNames.add(sheetName);
 
       const sheetRows = sectionRows.map((r) => ({
-        'Student Name': r['Student Name'],
+        Name: r.Name,
         'Register Number': r['Register Number'],
-        'Topic Name': r['Topic Name'],
+        Topic: r.Topic,
+        Section: r.Section,
         Status: r.Status,
-        Mark: r.Mark,
+        'Obtain Mark': r['Obtain Mark'],
         'Total Marks': r['Total Marks'],
-        'Submitted At': r['Submitted At'],
-        'Graded At': r['Graded At'],
       }));
 
-      const worksheet = XLSX.utils.json_to_sheet(sheetRows, {
-        header: ['Student Name', 'Register Number', 'Topic Name', 'Status', 'Mark', 'Total Marks', 'Submitted At', 'Graded At'],
-      });
-      XLSX.utils.book_append_sheet(workbook, worksheet, sheetName);
+      addFormattedSheet(sheetName, sheetRows);
     }
 
-    XLSX.writeFile(workbook, gradedReportFilePath);
+    await workbook.xlsx.writeFile(gradedReportFilePath);
 
     return {
       rows: rows.length,
