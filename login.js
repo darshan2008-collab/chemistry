@@ -16,6 +16,10 @@ function canOpenLoginPageDirectly() {
     return true;
   }
 
+  if (cameFromSplashPage() && !isReloadNavigation()) {
+    return true;
+  }
+
   try {
     const splashAccess = sessionStorage.getItem('chemtest_prelogin_ok');
     if (splashAccess === '1') {
@@ -26,6 +30,32 @@ function canOpenLoginPageDirectly() {
     return false;
   }
 
+  return false;
+}
+
+function cameFromSplashPage() {
+  try {
+    const ref = String(document.referrer || '');
+    if (!ref) return false;
+    const refUrl = new URL(ref);
+    return /\/splash\.html$/i.test(refUrl.pathname);
+  } catch (_err) {
+    return false;
+  }
+}
+
+function isReloadNavigation() {
+  try {
+    const navEntries = performance.getEntriesByType('navigation');
+    if (navEntries && navEntries.length && navEntries[0].type === 'reload') {
+      return true;
+    }
+    if (performance.navigation && performance.navigation.type === 1) {
+      return true;
+    }
+  } catch (_err) {
+    return false;
+  }
   return false;
 }
 
