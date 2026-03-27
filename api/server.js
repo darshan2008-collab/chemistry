@@ -494,15 +494,21 @@ function inferSectionFromRegNo(regNo) {
 
 async function rebuildGradedReportWorkbook() {
   // Prevent concurrent rebuilds
-  if (excelRebuildInProgress) return;
+  if (excelRebuildInProgress) {
+    console.warn('[EXCEL-REBUILD] Build already in progress, skipping concurrent request');
+    return null;
+  }
   excelRebuildInProgress = true;
 
   try {
+    console.log('[EXCEL-REBUILD] Starting graded report rebuild...');
+
     let sourceOrderMap = new Map();
     try {
       const sourceStudents = parseStudentsFromFile(studentsFile);
       sourceOrderMap = new Map(Object.keys(sourceStudents).map((regNo, index) => [String(regNo).toUpperCase(), index]));
     } catch (_err) {
+      console.warn('[EXCEL-REBUILD] Could not parse source students file, using default order');
       sourceOrderMap = new Map();
     }
 
@@ -510,8 +516,10 @@ async function rebuildGradedReportWorkbook() {
       `SELECT reg_no,
               full_name,
               COALESCE(NULLIF(TRIM(section), ''), 'Unspecified Section') AS section
-       FROM students`
+       FROM students
+       ORDER BY reg_no ASC`
     );
+    console.log(`[EXCEL-REBUILD] Found ${studentsResult.rows.length} students`);
 
     const submissionsResult = await pool.query(
       `SELECT sub.student_name,
@@ -527,8 +535,9 @@ async function rebuildGradedReportWorkbook() {
               COALESCE(NULLIF(TRIM(s.section), ''), NULLIF(TRIM(sub.classroom), ''), 'Unspecified Section') AS section
        FROM submissions sub
        LEFT JOIN students s ON s.reg_no = sub.roll_number
-       ORDER BY COALESCE(sub.graded_at, sub.submitted_at) DESC`
+       ORDER BY sub.roll_number ASC, COALESCE(sub.graded_at, sub.submitted_at) DESC`
     );
+    console.log(`[EXCEL-REBUILD] Found ${submissionsResult.rows.length} submissions`);
 
     const submissionsByRoll = new Map();
     for (const sub of submissionsResult.rows) {
@@ -553,8 +562,8 @@ async function rebuildGradedReportWorkbook() {
       const latestSubmission = (submissionsByRoll.get(regNo) || [])[0] || null;
 
       rows.push({
-        Name: student.full_name,
-        'Register Number': student.reg_no,
+        Name: student.full_name || '',
+        'Register Number': student.reg_no || '',
         Topic: latestSubmission?.test_title || '',
         Section: latestSubmission?.section || student.section || 'Unspecified Section',
         Status: latestSubmission?.status || 'not submitted',
@@ -580,36 +589,58 @@ async function rebuildGradedReportWorkbook() {
       { header: 'Total Marks', key: 'Total Marks' },
     ];
 
+    // Create fresh workbook
     const workbook = new ExcelJS.Workbook();
+    workbook.properties.date1904 = false;
 
     const addFormattedSheet = (sheetName, sheetRows) => {
+      // Prevent duplicate sheet names
+      if (workbook.getWorksheet(sheetName)) {
+        workbook.removeWorksheet(sheetName);
+      }
+
       const worksheet = workbook.addWorksheet(sheetName);
-      worksheet.columns = reportColumns.map((column) => ({
-        header: column.header,
-        key: column.key,
-        width: column.header.length + 2,
-      }));
+      worksheet.columns = reportColumns;
 
-      worksheet.addRows(sheetRows);
+      // Add data rows
+      if (sheetRows && sheetRows.length > 0) {
+        worksheet.addRows(sheetRows);
+      }
 
+      // Format header row
       const headerRow = worksheet.getRow(1);
       headerRow.font = { bold: true };
       headerRow.alignment = { vertical: 'middle', horizontal: 'center', wrapText: true };
+      headerRow.fill = {
+        type: 'pattern',
+        pattern: 'solid',
+        fgColor: { argb: 'FFF0F0F0' }
+      };
 
-      for (const column of worksheet.columns) {
-        const headerLength = String(column.header || '').length;
-        let maxLength = headerLength;
-        column.eachCell({ includeEmpty: true }, (cell, rowNumber) => {
-          if (rowNumber === 1) return;
+      // Auto-fit column widths based on content
+      for (let colIndex = 0; colIndex < reportColumns.length; colIndex++) {
+        const column = worksheet.columns[colIndex];
+        const header = column.header || '';
+        let maxLength = String(header).length;
+
+        // Check all cells in column for max width
+        for (let rowNum = 2; rowNum <= sheetRows.length + 1; rowNum++) {
+          const cell = worksheet.getCell(rowNum, colIndex + 1);
           const cellValue = cell.value == null ? '' : String(cell.value);
-          if (cellValue.length > maxLength) maxLength = cellValue.length;
-        });
+          maxLength = Math.max(maxLength, cellValue.length);
+        }
+
+        // Set column width (min 12, max 50)
         column.width = Math.min(50, Math.max(12, maxLength + 2));
       }
+
+      console.log(`[EXCEL-REBUILD] Added sheet: ${sheetName} with ${sheetRows.length} rows`);
     };
 
+    // Add All Students sheet
     addFormattedSheet('All Students', rows);
 
+    // Group by Section for section-wise sheets
     const grouped = new Map();
     for (const row of rows) {
       const key = String(row.Section || 'Unspecified Section');
@@ -618,6 +649,8 @@ async function rebuildGradedReportWorkbook() {
     }
 
     const usedNames = new Set(['All Students']);
+
+    // Add section-wise sheets (Section A3, Section A7, etc.)
     for (const [section, groupRows] of grouped.entries()) {
       const baseName = sanitizeSheetName(`Section ${section}`);
       let sheetName = baseName;
@@ -629,20 +662,10 @@ async function rebuildGradedReportWorkbook() {
       }
       usedNames.add(sheetName);
 
-      const sheetRows = groupRows.map((r) => ({
-        Name: r.Name,
-        'Register Number': r['Register Number'],
-        Topic: r.Topic,
-        Section: r.Section,
-        Status: r.Status,
-        'Obtain Mark': r['Obtain Mark'],
-        'Total Marks': r['Total Marks'],
-      }));
-
-      addFormattedSheet(sheetName, sheetRows);
+      addFormattedSheet(sheetName, groupRows);
     }
 
-    // Explicit class-wise sheets (A7/A3 etc.) sourced from DB student section values.
+    // Add explicit class-wise sheets (A7, A3, etc.) for easy reference
     const sectionGroups = new Map();
     for (const row of rows) {
       const sectionKey = String(row.Section || 'Unspecified Section').toUpperCase();
@@ -650,11 +673,13 @@ async function rebuildGradedReportWorkbook() {
       sectionGroups.get(sectionKey).push(row);
     }
 
+    // Ensure default sections exist (even if empty)
     const defaultSections = ['A7', 'A3'];
     for (const section of defaultSections) {
       if (!sectionGroups.has(section)) sectionGroups.set(section, []);
     }
 
+    // Add class-wise sheets
     for (const [section, sectionRows] of sectionGroups.entries()) {
       const baseName = sanitizeSheetName(section);
       let sheetName = baseName;
@@ -666,25 +691,33 @@ async function rebuildGradedReportWorkbook() {
       }
       usedNames.add(sheetName);
 
-      const sheetRows = sectionRows.map((r) => ({
-        Name: r.Name,
-        'Register Number': r['Register Number'],
-        Topic: r.Topic,
-        Section: r.Section,
-        Status: r.Status,
-        'Obtain Mark': r['Obtain Mark'],
-        'Total Marks': r['Total Marks'],
-      }));
-
-      addFormattedSheet(sheetName, sheetRows);
+      addFormattedSheet(sheetName, sectionRows);
     }
 
+    // Ensure upload directory exists
+    fs.mkdirSync(path.dirname(gradedReportFilePath), { recursive: true });
+
+    // Write workbook to file
+    console.log(`[EXCEL-REBUILD] Writing Excel file to: ${gradedReportFilePath}`);
     await workbook.xlsx.writeFile(gradedReportFilePath);
+
+    // Verify file was written
+    if (!fs.existsSync(gradedReportFilePath)) {
+      throw new Error(`Excel file was not created at: ${gradedReportFilePath}`);
+    }
+
+    const fileStats = fs.statSync(gradedReportFilePath);
+    console.log(`[EXCEL-REBUILD] ✓ Successfully wrote ${fileStats.size} bytes to ${gradedReportFilePath}`);
 
     return {
       rows: rows.length,
       filePath: gradedReportFilePath,
+      worksheets: workbook.worksheets.length,
+      fileSize: fileStats.size,
     };
+  } catch (err) {
+    console.error('[EXCEL-REBUILD] ✗ Error rebuilding Excel workbook:', err.message || err);
+    throw err;
   } finally {
     excelRebuildInProgress = false;
   }
@@ -1038,7 +1071,14 @@ app.patch('/submissions/:id', requireAuth(['staff', 'student']), async (req, res
 
     let reportSync = null;
     if (shouldRefreshReport) {
-      reportSync = await rebuildGradedReportWorkbook();
+      try {
+        console.log('[PATCH-SUBMISSION] Triggering report rebuild after submission update');
+        reportSync = await rebuildGradedReportWorkbook();
+        console.log('[PATCH-SUBMISSION] Report rebuild result:', reportSync);
+      } catch (rebuildErr) {
+        console.error('[PATCH-SUBMISSION] Warning: Report rebuild failed (but submission was saved):', rebuildErr.message);
+        reportSync = { error: rebuildErr.message };
+      }
     }
 
     res.json({ submission, reportSync });
@@ -1049,9 +1089,22 @@ app.patch('/submissions/:id', requireAuth(['staff', 'student']), async (req, res
 
 app.get('/reports/graded.xlsx', requireAuth('staff'), async (_req, res, next) => {
   try {
-    await rebuildGradedReportWorkbook();
+    console.log('[REPORT-DOWNLOAD] Requesting graded report download');
+    const result = await rebuildGradedReportWorkbook();
+
+    if (!fs.existsSync(gradedReportFilePath)) {
+      console.error('[REPORT-DOWNLOAD] Excel file does not exist at:', gradedReportFilePath);
+      return res.status(500).json({ error: 'Failed to generate report file' });
+    }
+
+    const fileStats = fs.statSync(gradedReportFilePath);
+    console.log(`[REPORT-DOWNLOAD] Sending report (${fileStats.size} bytes), rebuild result:`, result);
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="graded-report.xlsx"');
     res.download(gradedReportFilePath, 'graded-report.xlsx');
   } catch (err) {
+    console.error('[REPORT-DOWNLOAD] Error:', err.message || err);
     next(err);
   }
 });
@@ -1105,7 +1158,13 @@ app.delete('/submissions/:id', requireAuth(['staff', 'student']), async (req, re
     }
 
     if (req.auth.role === 'staff') {
-      await rebuildGradedReportWorkbook();
+      try {
+        console.log('[DELETE-SUBMISSION] Triggering report rebuild after submission deletion');
+        await rebuildGradedReportWorkbook();
+        console.log('[DELETE-SUBMISSION] Report rebuild successful');
+      } catch (rebuildErr) {
+        console.error('[DELETE-SUBMISSION] Warning: Report rebuild failed (but submission was deleted):', rebuildErr.message);
+      }
     }
     res.json({ ok: true });
   } catch (err) {
