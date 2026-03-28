@@ -66,6 +66,7 @@ const STUDENTS_DB = {
   "927625BAM061": "VIKRAM S",
   "927625BAM063": "YUVAHARSHINI E",
   // ── BCS Series (A3) ───────────────────────────────────────
+  "927625BCS0003": "ABITHA M",
   "927625BCS003": "ABITHA M",
   "927625BCS005": "AISHWARYA S",
   "927625BCS007": "AKSHARAA S",
