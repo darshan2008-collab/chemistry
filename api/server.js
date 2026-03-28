@@ -14,6 +14,7 @@ const uploadDir = process.env.UPLOAD_DIR || (process.platform === 'win32'
   : '/data/uploads');
 const gradedReportFilePath = process.env.GRADED_REPORT_FILE || path.join(uploadDir, 'graded-report.xlsx');
 const studentsFile = process.env.STUDENTS_FILE || '/app/students-db.js';
+const syncStudentsOnStartup = String(process.env.STUDENTS_SYNC_ON_STARTUP || 'true').trim().toLowerCase() !== 'false';
 const resyncToken = process.env.RESYNC_TOKEN || '';
 const authPepper = process.env.AUTH_PEPPER || 'change_this_auth_pepper';
 const sessionTtlHours = Number(process.env.AUTH_SESSION_TTL_HOURS || 24);
@@ -1416,6 +1417,16 @@ async function seedStudentsIfEmpty() {
   console.log(`Initial student seed completed. Inserted: ${result.inserted}, Updated: ${result.updated}, Total source: ${result.total}`);
 }
 
+async function syncStudentsOnApiStartup() {
+  if (!syncStudentsOnStartup) {
+    console.log('Startup student sync is disabled (STUDENTS_SYNC_ON_STARTUP=false)');
+    return;
+  }
+
+  const result = await syncStudentsFromFile();
+  console.log(`Startup student sync completed. Inserted: ${result.inserted}, Updated: ${result.updated}, Total source: ${result.total}`);
+}
+
 async function backfillMissingStudentAuth() {
   const result = await pool.query(
     `INSERT INTO student_auth (reg_no, password_hash, password_changed)
@@ -1487,7 +1498,7 @@ app.use((err, _req, res, _next) => {
 
 async function bootstrap() {
   await ensureSchema();
-  await seedStudentsIfEmpty();
+  await syncStudentsOnApiStartup();
   await backfillStudentSectionFromRegNo();
   await backfillMissingStudentAuth();
   await enforceDefaultPasswordForFirstLoginAccounts();
