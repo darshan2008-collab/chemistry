@@ -313,15 +313,17 @@ app.post('/auth/student/login', async (req, res, next) => {
   try {
     const regNo = String(req.body?.regNo || '').trim().toUpperCase();
     const password = String(req.body?.password || '');
+    const passwordTrimmed = password.trim();
     if (!regNo || !password) {
       return res.status(400).json({ error: 'Missing credentials' });
     }
 
     const result = await pool.query(
-      `SELECT s.reg_no, s.full_name, a.password_hash, a.password_changed
+      `SELECT BTRIM(s.reg_no) AS reg_no, s.full_name, a.password_hash, a.password_changed
        FROM students s
-       JOIN student_auth a ON a.reg_no = s.reg_no
-       WHERE s.reg_no = $1`,
+       JOIN student_auth a ON UPPER(BTRIM(a.reg_no)) = UPPER(BTRIM(s.reg_no))
+       WHERE UPPER(BTRIM(s.reg_no)) = UPPER(BTRIM($1))
+       LIMIT 1`,
       [regNo]
     );
     if (!result.rows.length) {
@@ -329,21 +331,22 @@ app.post('/auth/student/login', async (req, res, next) => {
     }
 
     const row = result.rows[0];
+    const rowRegNo = String(row.reg_no || '').trim().toUpperCase();
     const passwordChanged = Boolean(row.password_changed);
 
     // First login rule: before password is changed, default password is register number.
     if (!passwordChanged) {
-      if (password !== regNo) {
+      if (passwordTrimmed.toUpperCase() !== rowRegNo) {
         return res.status(401).json({ error: 'Use register number as password for first login' });
       }
-    } else if (hashPassword(password) !== row.password_hash) {
+    } else if (hashPassword(passwordTrimmed) !== row.password_hash) {
       return res.status(401).json({ error: 'Invalid credentials' });
     }
 
-    const token = createSession({ role: 'student', regNo: row.reg_no, name: row.full_name });
+    const token = createSession({ role: 'student', regNo: rowRegNo, name: row.full_name });
     res.json({
       token,
-      student: { regNo: row.reg_no, name: row.full_name },
+      student: { regNo: rowRegNo, name: row.full_name },
       mustChangePassword: !passwordChanged,
     });
   } catch (err) {
