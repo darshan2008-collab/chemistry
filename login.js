@@ -267,10 +267,10 @@ function initUnifiedForm() {
     }
 
     const regCandidate = rawId.toUpperCase();
-    const isStudent = !!STUDENTS_DB[regCandidate];
 
     try {
-      if (isStudent) {
+      // Always try student auth first so login does not depend on cached STUDENTS_DB in browser.
+      try {
         const payload = await apiStudentLogin(regCandidate, pw);
 
         if (payload.mustChangePassword) {
@@ -288,6 +288,8 @@ function initUnifiedForm() {
         showToast('👋 Welcome, ' + (payload?.student?.name || STUDENTS_DB[regCandidate]) + '!', 'ok top');
         setTimeout(() => window.location.href = 'index.html', 700);
         return;
+      } catch (_studentErr) {
+        // Fall through to staff/super-admin auth.
       }
 
       const payload = await apiStaffLogin(rawId.toLowerCase(), pw);
