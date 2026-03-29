@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Super Admin Dashboard - ChemTest Portal</title>
+    <title>Super Admin Dashboard - Unitest Portal</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link
         href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Syne:wght@600;700;800&display=swap"
@@ -17,7 +17,7 @@
     <main class="shell">
         <header class="top">
             <div class="title-block">
-                <p class="eyebrow">CHEMTEST CONTROL HUB</p>
+                <p class="eyebrow">UNITEST CONTROL HUB</p>
                 <h1>Super Admin Console</h1>
             </div>
             <p id="welcome">Welcome</p>
@@ -61,7 +61,9 @@
                         <label for="studentFile">Excel File (.xlsx/.xls/.csv)</label>
                         <input id="studentFile" type="file" accept=".xlsx,.xls,.csv" required />
 
+                        <button class="btn ghost" id="downloadTemplateBtn" type="button">Download Excel Template</button>
                         <button class="btn" type="submit">Upload & Import Students</button>
+                        <p class="msg" style="margin-top:4px;color:var(--muted);">Existing register numbers are skipped and not overwritten.</p>
                         <p id="importMsg" class="msg"></p>
                     </form>
                 </section>

@@ -15,6 +15,7 @@ const uploadDir = process.env.UPLOAD_DIR || (process.platform === 'win32'
 const gradedReportFilePath = process.env.GRADED_REPORT_FILE || path.join(uploadDir, 'graded-report.xlsx');
 const studentsFile = process.env.STUDENTS_FILE || '/app/students-db.js';
 const syncStudentsOnStartup = String(process.env.STUDENTS_SYNC_ON_STARTUP || 'true').trim().toLowerCase() !== 'false';
+const baselineAssignmentsOnStartup = String(process.env.BASELINE_ASSIGNMENTS_ON_STARTUP || 'false').trim().toLowerCase() !== 'false';
 const resyncToken = process.env.RESYNC_TOKEN || '';
 const authPepper = process.env.AUTH_PEPPER || 'change_this_auth_pepper';
 const sessionTtlHours = Number(process.env.AUTH_SESSION_TTL_HOURS || 24);
@@ -219,6 +220,36 @@ function createStoredUploadName(originalName) {
   return `${base || 'file'}-${unique}${ext}`;
 }
 
+function sanitizePathSegment(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, '-')
+    .replace(/-+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80) || 'unknown';
+}
+
+function writeFileToStorage(relativeFolder, storedName, buffer) {
+  const safeFolder = String(relativeFolder || '').replace(/\\/g, '/').replace(/^\/+/, '');
+  const baseDir = path.resolve(uploadDir);
+  const absoluteFolder = path.resolve(baseDir, safeFolder);
+  if (!absoluteFolder.startsWith(baseDir)) {
+    throw new Error('Invalid storage folder');
+  }
+  fs.mkdirSync(absoluteFolder, { recursive: true });
+  const absolutePath = path.join(absoluteFolder, path.basename(storedName));
+  fs.writeFileSync(absolutePath, buffer);
+  return absolutePath;
+}
+
+function toUploadsPublicUrl(relativeFolder, storedName) {
+  const safeFolder = String(relativeFolder || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/g, '');
+  const fileName = encodeURIComponent(path.basename(String(storedName || 'file')));
+  if (!safeFolder) return `/api/uploads/${fileName}`;
+  return `/api/uploads/${safeFolder}/${fileName}`;
+}
+
 function cleanupUploadDiskCopies(fileNames) {
   for (const rawName of fileNames || []) {
     const safeName = path.basename(String(rawName || ''));
@@ -254,7 +285,6 @@ const materialUpload = multer({
   storage: multer.memoryStorage(),
   limits: {
     files: 1,
-    fileSize: 50 * 1024 * 1024,
   },
 });
 
@@ -430,6 +460,17 @@ async function ensureStaffMappedToStudentForSubject(staffEmail, regNo, subjectId
     [staffEmail, regNo, subjectId]
   );
   return result.rows.length > 0;
+}
+
+async function getSubjectCodeById(subjectId) {
+  const result = await pool.query(
+    `SELECT code
+     FROM subjects
+     WHERE id = $1
+     LIMIT 1`,
+    [subjectId]
+  );
+  return String(result.rows[0]?.code || '').trim().toUpperCase();
 }
 
 async function getStudentUsedBytes(regNo) {
@@ -744,6 +785,54 @@ app.get('/superadmin/audit-logs', requireSuperAdmin, async (req, res, next) => {
   }
 });
 
+app.get('/superadmin/db-status', requireSuperAdmin, async (_req, res, next) => {
+  try {
+    const [
+      students,
+      studentAuth,
+      staffAccounts,
+      activeStaff,
+      subjects,
+      submissions,
+      pendingSubmissions,
+      qaThreads,
+      qaMessages,
+    ] = await Promise.all([
+      pool.query('SELECT COUNT(*)::int AS count FROM students'),
+      pool.query('SELECT COUNT(*)::int AS count FROM student_auth'),
+      pool.query('SELECT COUNT(*)::int AS count FROM staff_accounts'),
+      pool.query('SELECT COUNT(*)::int AS count FROM staff_accounts WHERE is_active = TRUE'),
+      pool.query('SELECT COUNT(*)::int AS count FROM subjects'),
+      pool.query('SELECT COUNT(*)::int AS count FROM submissions'),
+      pool.query(`SELECT COUNT(*)::int AS count FROM submissions WHERE status = 'pending'`),
+      pool.query('SELECT COUNT(*)::int AS count FROM qa_threads'),
+      pool.query('SELECT COUNT(*)::int AS count FROM qa_messages'),
+    ]);
+
+    res.json({
+      ok: true,
+      dbReady,
+      startupStudentSyncEnabled: syncStudentsOnStartup,
+      startupBaselineAssignmentsEnabled: baselineAssignmentsOnStartup,
+      studentsSourceFile: studentsFile,
+      counts: {
+        students: students.rows[0].count,
+        studentAuth: studentAuth.rows[0].count,
+        staffAccounts: staffAccounts.rows[0].count,
+        activeStaff: activeStaff.rows[0].count,
+        subjects: subjects.rows[0].count,
+        submissions: submissions.rows[0].count,
+        pendingSubmissions: pendingSubmissions.rows[0].count,
+        qaThreads: qaThreads.rows[0].count,
+        qaMessages: qaMessages.rows[0].count,
+      },
+      serverTime: new Date().toISOString(),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 app.post('/admin/staff', requireSuperAdmin, async (req, res, next) => {
   try {
     const email = String(req.body?.email || '').trim().toLowerCase();
@@ -1027,6 +1116,17 @@ app.post('/admin/assign/staff-subject', requireSuperAdmin, async (req, res, next
       return res.status(400).json({ error: 'Missing required fields' });
     }
 
+    const activeCheck = await pool.query(
+      `SELECT
+         EXISTS(SELECT 1 FROM staff_accounts WHERE email = $1 AND is_active = TRUE) AS has_staff,
+         EXISTS(SELECT 1 FROM subjects WHERE id = $2 AND is_active = TRUE) AS has_subject`,
+      [staffEmail, subjectId]
+    );
+    const hasStaff = Boolean(activeCheck.rows?.[0]?.has_staff);
+    const hasSubject = Boolean(activeCheck.rows?.[0]?.has_subject);
+    if (!hasStaff) return res.status(400).json({ error: 'Staff account is missing or inactive' });
+    if (!hasSubject) return res.status(400).json({ error: 'Subject is missing or inactive' });
+
     const result = await pool.query(
       `INSERT INTO staff_subject_assignments (staff_email, subject_id, is_active)
        VALUES ($1, $2, TRUE)
@@ -1051,6 +1151,14 @@ app.post('/admin/assign/student-subject', requireSuperAdmin, async (req, res, ne
     const subjectId = Number(req.body?.subjectId);
     if (!regNo || !Number.isFinite(subjectId) || subjectId <= 0) {
       return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const activeSubject = await pool.query(
+      `SELECT 1 FROM subjects WHERE id = $1 AND is_active = TRUE LIMIT 1`,
+      [subjectId]
+    );
+    if (!activeSubject.rows.length) {
+      return res.status(400).json({ error: 'Subject is missing or inactive' });
     }
 
     const result = await pool.query(
@@ -1078,6 +1186,24 @@ app.post('/admin/assign/student-staff-subject', requireSuperAdmin, async (req, r
     const subjectId = Number(req.body?.subjectId);
     if (!regNo || !staffEmail || !Number.isFinite(subjectId) || subjectId <= 0) {
       return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const activeSubject = await pool.query(
+      `SELECT 1 FROM subjects WHERE id = $1 AND is_active = TRUE LIMIT 1`,
+      [subjectId]
+    );
+    if (!activeSubject.rows.length) {
+      return res.status(400).json({ error: 'Subject is missing or inactive' });
+    }
+
+    const canStaffTakeSubject = await ensureStaffAssignedToSubject(staffEmail, subjectId);
+    if (!canStaffTakeSubject) {
+      return res.status(409).json({ error: 'Staff is not assigned to this subject' });
+    }
+
+    const canStudentTakeSubject = await ensureStudentAssignedToSubject(regNo, subjectId);
+    if (!canStudentTakeSubject) {
+      return res.status(409).json({ error: 'Student is not assigned to this subject' });
     }
 
     const result = await pool.query(
@@ -1208,6 +1334,37 @@ app.get('/student/subjects', requireAuth('student'), async (req, res, next) => {
   }
 });
 
+app.get('/student/staff', requireAuth('student'), async (req, res, next) => {
+  try {
+    const regNo = normalizeRegNo(req.auth.regNo);
+    const subjectId = req.query?.subjectId ? Number(req.query.subjectId) : null;
+    const params = [regNo];
+    const where = [
+      'a.reg_no = $1',
+      'a.is_active = TRUE',
+      'st.is_active = TRUE',
+    ];
+
+    if (Number.isFinite(subjectId) && subjectId > 0) {
+      params.push(subjectId);
+      where.push(`a.subject_id = $${params.length}`);
+    }
+
+    const result = await pool.query(
+      `SELECT DISTINCT st.email, st.full_name, st.role, a.subject_id
+       FROM student_staff_subject_assignments a
+       JOIN staff_accounts st ON st.email = a.staff_email
+       WHERE ${where.join(' AND ')}
+       ORDER BY st.full_name ASC, st.email ASC`,
+      params
+    );
+
+    res.json({ staff: result.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
 app.get('/staff/students', requireAuth('staff'), async (req, res, next) => {
   try {
     const subjectId = Number(req.query?.subjectId);
@@ -1254,14 +1411,26 @@ app.post('/staff/materials', requireAuth('staff'), materialUpload.single('file')
       return res.status(403).json({ error: 'Forbidden' });
     }
 
+    const subjectCode = (await getSubjectCodeById(subjectId)) || `subject-${subjectId}`;
+    const folderPath = [
+      'staff',
+      sanitizePathSegment(staffEmail),
+      'subjects',
+      sanitizePathSegment(subjectCode),
+      'materials',
+    ].join('/');
+    const storedName = createStoredUploadName(file.originalname);
+    const fileUrl = toUploadsPublicUrl(folderPath, storedName);
+    writeFileToStorage(folderPath, storedName, file.buffer);
+
     const result = await pool.query(
       `INSERT INTO official_materials (
          subject_id, staff_email, title, description,
-         file_name, mime_type, size_bytes, file_data, is_active
+         file_name, file_url, folder_path, mime_type, size_bytes, file_data, is_active
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE)
-       RETURNING id, subject_id, staff_email, title, description, file_name, mime_type, size_bytes, is_active, created_at, updated_at`,
-      [subjectId, staffEmail, title, description || null, file.originalname, file.mimetype, file.size, file.buffer]
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, TRUE)
+       RETURNING id, subject_id, staff_email, title, description, file_name, file_url, folder_path, mime_type, size_bytes, is_active, created_at, updated_at`,
+      [subjectId, staffEmail, title, description || null, file.originalname, fileUrl, folderPath, file.mimetype, file.size, file.buffer]
     );
 
     res.status(201).json({ ok: true, material: result.rows[0] });
@@ -1283,7 +1452,7 @@ app.get('/staff/materials', requireAuth('staff'), async (req, res, next) => {
       where.push(`subject_id = $${params.length}`);
     }
     const result = await pool.query(
-      `SELECT id, subject_id, staff_email, title, description, file_name, mime_type, size_bytes, is_active, created_at, updated_at
+      `SELECT id, subject_id, staff_email, title, description, file_name, file_url, folder_path, mime_type, size_bytes, is_active, created_at, updated_at
        FROM official_materials
        WHERE ${where.join(' AND ')}
        ORDER BY created_at DESC`,
@@ -1316,7 +1485,7 @@ app.get('/student/materials', requireAuth('student'), async (req, res, next) => 
     }
     const result = await pool.query(
       `SELECT m.id, m.subject_id, sub.code AS subject_code, sub.name AS subject_name,
-              m.title, m.description, m.file_name, m.mime_type, m.size_bytes, m.created_at
+              m.title, m.description, m.file_name, m.file_url, m.folder_path, m.mime_type, m.size_bytes, m.created_at
        FROM official_materials m
        JOIN subjects sub ON sub.id = m.subject_id
        WHERE ${where.join(' AND ')}
@@ -2097,6 +2266,53 @@ function parseStudentsFromWorkbook(buffer) {
   return students;
 }
 
+function buildStudentImportTemplateBuffer() {
+  const workbook = XLSX.utils.book_new();
+
+  const templateRows = [
+    {
+      'Register Number': '927625BAD001',
+      'Student Name': 'Example Student',
+      Stream: 'CSE',
+      Section: 'A7',
+    },
+    {
+      'Register Number': '',
+      'Student Name': '',
+      Stream: '',
+      Section: '',
+    },
+  ];
+
+  const instructionsRows = [
+    {
+      Field: 'Register Number',
+      Required: 'Yes',
+      Notes: 'Unique value. Existing register numbers are skipped and never overwritten.',
+    },
+    {
+      Field: 'Student Name',
+      Required: 'Yes',
+      Notes: 'Full student name.',
+    },
+    {
+      Field: 'Stream',
+      Required: 'No',
+      Notes: 'Optional. Can be provided in file or as default in UI.',
+    },
+    {
+      Field: 'Section',
+      Required: 'No',
+      Notes: 'Optional. Values like A3/A7 are recommended.',
+    },
+  ];
+
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(templateRows), 'Students Template');
+  XLSX.utils.book_append_sheet(workbook, XLSX.utils.json_to_sheet(instructionsRows), 'Instructions');
+
+  return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
+}
+
 function inferSectionFromRegNo(regNo) {
   const code = String(regNo || '').toUpperCase();
   if (code.includes('BAD') || code.includes('BAM')) return 'A7';
@@ -2335,6 +2551,17 @@ async function rebuildGradedReportWorkbook() {
   }
 }
 
+app.get('/admin/students/template', requireSuperAdmin, async (_req, res, next) => {
+  try {
+    const buffer = buildStudentImportTemplateBuffer();
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="students-import-template.xlsx"');
+    return res.send(buffer);
+  } catch (err) {
+    return next(err);
+  }
+});
+
 app.post('/admin/students/import', requireSuperAdmin, excelUpload.single('file'), async (req, res, next) => {
   try {
     if (!req.file || !req.file.buffer) {
@@ -2365,7 +2592,7 @@ app.post('/admin/students/import', requireSuperAdmin, excelUpload.single('file')
     }
 
     let inserted = 0;
-    let updated = 0;
+    let skipped = 0;
     const streamCount = {};
 
     const client = await pool.connect();
@@ -2374,26 +2601,26 @@ app.post('/admin/students/import', requireSuperAdmin, excelUpload.single('file')
       for (const row of rows) {
         const stream = row.stream || fallbackStream;
         const section = row.section || fallbackSection || inferSectionFromRegNo(row.regNo);
-        const upsertStudent = await client.query(
+        const insertStudent = await client.query(
           `INSERT INTO students (reg_no, full_name, stream, section)
            VALUES ($1, $2, $3, $4)
-           ON CONFLICT (reg_no)
-           DO UPDATE SET full_name = EXCLUDED.full_name,
-                         stream = EXCLUDED.stream,
-                         section = EXCLUDED.section
-           RETURNING (xmax = 0) AS inserted`,
+           ON CONFLICT (reg_no) DO NOTHING
+           RETURNING reg_no`,
           [row.regNo, row.fullName, stream || null, section || null]
         );
 
-        await client.query(
-          `INSERT INTO student_auth (reg_no, password_hash, password_changed)
-           VALUES ($1, $2, FALSE)
-           ON CONFLICT (reg_no) DO NOTHING`,
-          [row.regNo, hashPassword(row.regNo)]
-        );
-
-        if (upsertStudent.rows[0].inserted) inserted += 1;
-        else updated += 1;
+        const wasInserted = insertStudent.rows.length > 0;
+        if (wasInserted) {
+          inserted += 1;
+          await client.query(
+            `INSERT INTO student_auth (reg_no, password_hash, password_changed)
+             VALUES ($1, $2, FALSE)
+             ON CONFLICT (reg_no) DO NOTHING`,
+            [row.regNo, hashPassword(row.regNo)]
+          );
+        } else {
+          skipped += 1;
+        }
 
         const key = stream || 'Unspecified';
         streamCount[key] = (streamCount[key] || 0) + 1;
@@ -2410,7 +2637,8 @@ app.post('/admin/students/import', requireSuperAdmin, excelUpload.single('file')
       ok: true,
       total: rows.length,
       inserted,
-      updated,
+      updated: 0,
+      skipped,
       streams: streamCount,
     });
   } catch (err) {
@@ -2978,19 +3206,33 @@ app.post('/upload', requireAuth('student'), upload.array('files', 20), async (re
   console.log('[UPLOAD] Upload dir:', uploadDir);
   console.log('[UPLOAD] First file:', req.files?.[0] ? { name: req.files[0].originalname, size: req.files[0].size, mime: req.files[0].mimetype } : 'none');
 
-  const files = (req.files || []).map((file) => ({
-    storedName: createStoredUploadName(file.originalname),
-    originalName: file.originalname,
-    url: '',
-    size: file.size,
-    mimeType: file.mimetype,
-    ext: path.extname(file.originalname || '').toLowerCase(),
-    data: file.buffer,
-  }));
+  const regNo = normalizeRegNo(req.auth.regNo);
+  const requestedSubjectId = Number(req.body?.subjectId);
+  const subjectCode = Number.isFinite(requestedSubjectId) && requestedSubjectId > 0
+    ? ((await getSubjectCodeById(requestedSubjectId)) || `subject-${requestedSubjectId}`)
+    : 'general';
+  const baseFolder = [
+    'students',
+    sanitizePathSegment(regNo),
+    'submissions',
+    sanitizePathSegment(subjectCode),
+  ].join('/');
 
-  for (const file of files) {
-    file.url = toPublicImageUrl(file.storedName);
-  }
+  const files = (req.files || []).map((file) => {
+    const storedName = createStoredUploadName(file.originalname);
+    return {
+      storedName,
+      originalName: file.originalname,
+      url: toUploadsPublicUrl(baseFolder, storedName),
+      folderPath: baseFolder,
+      size: file.size,
+      mimeType: file.mimetype,
+      ext: path.extname(file.originalname || '').toLowerCase(),
+      data: file.buffer,
+      uploadKind: 'submission',
+      subjectId: Number.isFinite(requestedSubjectId) && requestedSubjectId > 0 ? requestedSubjectId : null,
+    };
+  });
 
   if (!files.length) {
     console.error('[UPLOAD] ERROR: No files provided in request');
@@ -3008,7 +3250,6 @@ app.post('/upload', requireAuth('student'), upload.array('files', 20), async (re
   }
 
   try {
-    const regNo = normalizeRegNo(req.auth.regNo);
     const currentQuota = await upsertStudentQuota(regNo);
     const requestedBytes = files.reduce((sum, file) => sum + Number(file.size || 0), 0);
     if ((currentQuota.usedBytes + requestedBytes) > currentQuota.quotaBytes) {
@@ -3027,17 +3268,21 @@ app.post('/upload', requireAuth('student'), upload.array('files', 20), async (re
     try {
       await client.query('BEGIN');
       for (const file of files) {
+        writeFileToStorage(file.folderPath, file.storedName, file.data);
         await client.query(
-          `INSERT INTO uploads (stored_name, original_name, mime_type, size_bytes, file_url, file_data, owner_reg_no)
-           VALUES ($1, $2, $3, $4, $5, $6, $7)
+          `INSERT INTO uploads (stored_name, original_name, mime_type, size_bytes, file_url, folder_path, file_data, owner_reg_no, upload_kind, subject_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
            ON CONFLICT (stored_name)
            DO UPDATE SET original_name = EXCLUDED.original_name,
                          mime_type = EXCLUDED.mime_type,
                          size_bytes = EXCLUDED.size_bytes,
                          file_url = EXCLUDED.file_url,
+                         folder_path = EXCLUDED.folder_path,
                          file_data = EXCLUDED.file_data,
-                         owner_reg_no = EXCLUDED.owner_reg_no`,
-          [file.storedName, file.originalName, file.mimeType, file.size, file.url, file.data, regNo]
+                         owner_reg_no = EXCLUDED.owner_reg_no,
+                         upload_kind = EXCLUDED.upload_kind,
+                         subject_id = EXCLUDED.subject_id`,
+          [file.storedName, file.originalName, file.mimeType, file.size, file.url, file.folderPath, file.data, regNo, file.uploadKind, file.subjectId]
         );
       }
       await client.query('COMMIT');
@@ -3048,8 +3293,6 @@ app.post('/upload', requireAuth('student'), upload.array('files', 20), async (re
       client.release();
     }
 
-    cleanupUploadDiskCopies(files.map((file) => file.storedName));
-
     const updatedQuota = await upsertStudentQuota(regNo);
 
     console.log('[UPLOAD] SUCCESS: Saved', files.length, 'files to database');
@@ -3057,6 +3300,7 @@ app.post('/upload', requireAuth('student'), upload.array('files', 20), async (re
       name: file.storedName,
       originalName: file.originalName,
       url: file.url,
+      folderPath: file.folderPath,
       size: file.size,
       mimeType: file.mimeType,
     }));
@@ -3070,6 +3314,174 @@ app.post('/upload', requireAuth('student'), upload.array('files', 20), async (re
     });
   } catch (err) {
     console.error('[UPLOAD] DATABASE ERROR:', err.message);
+    next(err);
+  }
+});
+
+app.post('/student/notes', requireAuth('student'), upload.array('files', 20), async (req, res, next) => {
+  try {
+    const regNo = normalizeRegNo(req.auth.regNo);
+    const files = (req.files || []).map((file) => {
+      const storedName = createStoredUploadName(file.originalname);
+      const folderPath = [
+        'students',
+        sanitizePathSegment(regNo),
+        'personal-notes',
+      ].join('/');
+      return {
+        storedName,
+        originalName: file.originalname,
+        url: toUploadsPublicUrl(folderPath, storedName),
+        folderPath,
+        size: file.size,
+        mimeType: file.mimetype,
+        ext: path.extname(file.originalname || '').toLowerCase(),
+        data: file.buffer,
+      };
+    });
+
+    if (!files.length) {
+      return res.status(400).json({ error: 'No files uploaded' });
+    }
+
+    for (const file of files) {
+      const mimeOk = allowedStudentUploadMimeTypes.has(String(file.mimeType || '').toLowerCase());
+      const extOk = allowedStudentUploadExtensions.has(String(file.ext || '').toLowerCase());
+      if (!mimeOk || !extOk) {
+        return res.status(400).json({ error: `File type not allowed: ${file.originalName}` });
+      }
+    }
+
+    const currentQuota = await upsertStudentQuota(regNo);
+    const requestedBytes = files.reduce((sum, file) => sum + Number(file.size || 0), 0);
+    if ((currentQuota.usedBytes + requestedBytes) > currentQuota.quotaBytes) {
+      return res.status(409).json({
+        error: 'Student storage quota exceeded',
+        quota: {
+          usedBytes: currentQuota.usedBytes,
+          requestedBytes,
+          remainingBytes: currentQuota.remainingBytes,
+          totalBytes: currentQuota.quotaBytes,
+        },
+      });
+    }
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      for (const file of files) {
+        writeFileToStorage(file.folderPath, file.storedName, file.data);
+        await client.query(
+          `INSERT INTO uploads (stored_name, original_name, mime_type, size_bytes, file_url, folder_path, file_data, owner_reg_no, upload_kind, subject_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'personal_note', NULL)
+           ON CONFLICT (stored_name)
+           DO UPDATE SET original_name = EXCLUDED.original_name,
+                         mime_type = EXCLUDED.mime_type,
+                         size_bytes = EXCLUDED.size_bytes,
+                         file_url = EXCLUDED.file_url,
+                         folder_path = EXCLUDED.folder_path,
+                         file_data = EXCLUDED.file_data,
+                         owner_reg_no = EXCLUDED.owner_reg_no,
+                         upload_kind = EXCLUDED.upload_kind,
+                         subject_id = EXCLUDED.subject_id`,
+          [file.storedName, file.originalName, file.mimeType, file.size, file.url, file.folderPath, file.data, regNo]
+        );
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    const updatedQuota = await upsertStudentQuota(regNo);
+    res.status(201).json({
+      ok: true,
+      files: files.map((file) => ({
+        name: file.storedName,
+        originalName: file.originalName,
+        url: file.url,
+        folderPath: file.folderPath,
+        size: file.size,
+        mimeType: file.mimeType,
+      })),
+      quota: {
+        usedBytes: updatedQuota.usedBytes,
+        remainingBytes: updatedQuota.remainingBytes,
+        totalBytes: updatedQuota.quotaBytes,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/student/notes', requireAuth('student'), async (req, res, next) => {
+  try {
+    const regNo = normalizeRegNo(req.auth.regNo);
+    const result = await pool.query(
+      `SELECT stored_name, original_name, mime_type, size_bytes, file_url, folder_path, created_at
+       FROM uploads
+       WHERE owner_reg_no = $1
+         AND upload_kind = 'personal_note'
+       ORDER BY created_at DESC`,
+      [regNo]
+    );
+    const quota = await upsertStudentQuota(regNo);
+    res.json({
+      notes: result.rows,
+      quota: {
+        usedBytes: quota.usedBytes,
+        remainingBytes: quota.remainingBytes,
+        totalBytes: quota.quotaBytes,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete('/student/notes/:storedName', requireAuth('student'), async (req, res, next) => {
+  try {
+    const regNo = normalizeRegNo(req.auth.regNo);
+    const storedName = path.basename(String(req.params?.storedName || ''));
+    if (!storedName) {
+      return res.status(400).json({ error: 'Invalid file id' });
+    }
+
+    const result = await pool.query(
+      `DELETE FROM uploads
+       WHERE stored_name = $1
+         AND owner_reg_no = $2
+         AND upload_kind = 'personal_note'
+       RETURNING stored_name, folder_path`,
+      [storedName, regNo]
+    );
+    if (!result.rows.length) {
+      return res.status(404).json({ error: 'Note not found' });
+    }
+
+    const folderPath = String(result.rows[0].folder_path || '').replace(/\\/g, '/');
+    const absolutePath = path.join(uploadDir, folderPath, storedName);
+    try {
+      if (fs.existsSync(absolutePath)) {
+        fs.unlinkSync(absolutePath);
+      }
+    } catch (_err) {
+      // Best effort cleanup.
+    }
+
+    const quota = await upsertStudentQuota(regNo);
+    res.json({
+      ok: true,
+      quota: {
+        usedBytes: quota.usedBytes,
+        remainingBytes: quota.remainingBytes,
+        totalBytes: quota.quotaBytes,
+      },
+    });
+  } catch (err) {
     next(err);
   }
 });
@@ -3216,7 +3628,11 @@ async function ensureSchema() {
 
   await pool.query('ALTER TABLE uploads ADD COLUMN IF NOT EXISTS file_data BYTEA');
   await pool.query('ALTER TABLE uploads ADD COLUMN IF NOT EXISTS owner_reg_no TEXT');
+  await pool.query('ALTER TABLE uploads ADD COLUMN IF NOT EXISTS folder_path TEXT');
+  await pool.query("ALTER TABLE uploads ADD COLUMN IF NOT EXISTS upload_kind TEXT NOT NULL DEFAULT 'submission'");
+  await pool.query('ALTER TABLE uploads ADD COLUMN IF NOT EXISTS subject_id BIGINT');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_uploads_owner_reg_no ON uploads(owner_reg_no)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_uploads_upload_kind ON uploads(upload_kind)');
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS submissions (
@@ -3262,6 +3678,8 @@ async function ensureSchema() {
       title TEXT NOT NULL,
       description TEXT,
       file_name TEXT NOT NULL,
+      file_url TEXT,
+      folder_path TEXT,
       mime_type TEXT,
       size_bytes BIGINT,
       file_data BYTEA,
@@ -3270,6 +3688,8 @@ async function ensureSchema() {
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
+  await pool.query('ALTER TABLE official_materials ADD COLUMN IF NOT EXISTS file_url TEXT');
+  await pool.query('ALTER TABLE official_materials ADD COLUMN IF NOT EXISTS folder_path TEXT');
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS broadcast_messages (
@@ -3598,7 +4018,12 @@ async function bootstrap() {
   await upsertDefaultStaffAccount();
   await upsertDefaultSuperAdminAccount();
   await backfillSubmissionSubjectId();
-  await ensureBaselineAssignments();
+  if (baselineAssignmentsOnStartup) {
+    await ensureBaselineAssignments();
+    console.log('Startup baseline assignments are enabled (BASELINE_ASSIGNMENTS_ON_STARTUP=true)');
+  } else {
+    console.log('Startup baseline assignments are disabled (BASELINE_ASSIGNMENTS_ON_STARTUP=false)');
+  }
   await syncAllStudentQuotas();
   dbReady = true;
 

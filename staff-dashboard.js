@@ -178,12 +178,48 @@ function initStaffCommsPanel() {
         <div style="font-weight:700;margin-bottom:8px;">Student Q&A Threads</div>
         <div id="staffQaThreadsList" style="max-height:220px;overflow:auto;font-size:0.8rem;color:var(--text-muted);"></div>
       </div>
+      <form id="staffMaterialForm" class="record-card" style="padding:12px;display:grid;gap:8px;">
+        <div style="font-weight:700;">Subject Materials</div>
+        <input id="staffMaterialSubjectId" placeholder="Subject ID" style="padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:inherit;" required />
+        <input id="staffMaterialTitle" placeholder="Material title" style="padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:inherit;" required />
+        <textarea id="staffMaterialDescription" placeholder="Description (optional)" rows="2" style="padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:inherit;"></textarea>
+        <input id="staffMaterialFile" type="file" style="padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:inherit;" required />
+        <button class="t-grade-btn" type="submit">Upload Material</button>
+        <p id="staffMaterialMsg" style="margin:0;font-size:0.78rem;color:var(--text-muted);"></p>
+        <div id="staffMaterialList" style="max-height:220px;overflow:auto;font-size:0.8rem;color:var(--text-muted);"></div>
+      </form>
     </div>
   `;
   dashboardTab.appendChild(card);
 
   const annMsg = card.querySelector('#staffAnnMsg');
   const emergencyMsg = card.querySelector('#staffEmergencyMsg');
+  const materialMsg = card.querySelector('#staffMaterialMsg');
+
+  async function refreshMaterials() {
+    const list = card.querySelector('#staffMaterialList');
+    if (!list) return;
+    list.innerHTML = 'Loading...';
+    try {
+      const payload = await staffApiJson('/api/staff/materials');
+      const rows = payload.materials || [];
+      if (!rows.length) {
+        list.innerHTML = 'No materials uploaded yet.';
+        return;
+      }
+      list.innerHTML = rows.slice(0, 30).map((m) => `
+        <div style="padding:7px 0;border-bottom:1px solid rgba(255,255,255,0.08);">
+          <div style="font-weight:600;color:var(--text);">${esc(m.title || '')}</div>
+          <div>Subject: ${esc(String(m.subject_id || ''))} · ${esc(m.file_name || '')}</div>
+          <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;">
+            <a class="t-grade-btn" style="padding:4px 8px;font-size:0.72rem;text-decoration:none;" href="/api/materials/${encodeURIComponent(m.id)}/file" target="_blank" rel="noopener">Open</a>
+          </div>
+        </div>
+      `).join('');
+    } catch (err) {
+      list.innerHTML = `<span style="color:#ffb8c7;">${esc(err.message || 'Failed')}</span>`;
+    }
+  }
 
   async function refreshAnnouncements() {
     const list = card.querySelector('#staffAnnouncementsList');
@@ -292,6 +328,45 @@ function initStaffCommsPanel() {
     }
   });
 
+  card.querySelector('#staffMaterialForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const subjectId = Number(String(card.querySelector('#staffMaterialSubjectId').value || '').trim());
+    const title = String(card.querySelector('#staffMaterialTitle').value || '').trim();
+    const description = String(card.querySelector('#staffMaterialDescription').value || '').trim();
+    const file = card.querySelector('#staffMaterialFile').files?.[0];
+
+    if (!Number.isFinite(subjectId) || subjectId <= 0 || !title || !file) {
+      materialMsg.style.color = '#ffb8c7';
+      materialMsg.textContent = 'Subject ID, title and file are required';
+      return;
+    }
+
+    try {
+      const formData = new FormData();
+      formData.append('subjectId', String(subjectId));
+      formData.append('title', title);
+      formData.append('description', description);
+      formData.append('file', file);
+
+      const res = await fetch('/api/staff/materials', {
+        method: 'POST',
+        headers: getStaffAuthHeaders(),
+        body: formData,
+      });
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload?.error || `Request failed (${res.status})`);
+
+      materialMsg.style.color = '#9de9ff';
+      materialMsg.textContent = `Material uploaded (#${payload.material?.id || '-'})`;
+      card.querySelector('#staffMaterialFile').value = '';
+      showToast('Material uploaded', 'success');
+      await refreshMaterials();
+    } catch (err) {
+      materialMsg.style.color = '#ffb8c7';
+      materialMsg.textContent = err.message || 'Failed to upload material';
+    }
+  });
+
   card.querySelector('#staffReceiptForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     const id = String(card.querySelector('#staffReceiptMessageId').value || '').trim();
@@ -336,12 +411,13 @@ function initStaffCommsPanel() {
   });
 
   card.querySelector('#staffCommsRefreshBtn').addEventListener('click', async () => {
-    await Promise.all([refreshAnnouncements(), refreshQaThreads()]);
+    await Promise.all([refreshAnnouncements(), refreshQaThreads(), refreshMaterials()]);
     showToast('Communication panel refreshed', 'info');
   });
 
   refreshAnnouncements();
   refreshQaThreads();
+  refreshMaterials();
 }
 
 // ── Auto-refresh (poll + cross-tab storage events) ────────────

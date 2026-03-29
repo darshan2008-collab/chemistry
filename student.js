@@ -34,6 +34,15 @@ const DB_KEY = 'chemtest_submissions';
 let editingSubmissionId = null;
 let editingExistingImages = [];
 let mySubmissionsById = new Map();
+let authExpiryHandled = false;
+
+function handleStudentAuthExpired() {
+  if (authExpiryHandled) return;
+  authExpiryHandled = true;
+  clearStudentSession();
+  alert('Session expired. Please login again.');
+  window.location.href = 'login.html';
+}
 
 function getStudentAuthTokenOrThrow() {
   const session = getStudentSession();
@@ -120,6 +129,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initForm();
   await loadMyResults();
   initStudentCommsPanel();
+  initStudentPersonalNotesPanel();
   initLightbox();
 });
 
@@ -131,6 +141,10 @@ async function studentApiJson(url, options = {}) {
   };
   const res = await fetch(url, { ...options, headers });
   const payload = await res.json().catch(() => ({}));
+  if (res.status === 401) {
+    handleStudentAuthExpired();
+    throw new Error('Unauthorized');
+  }
   if (!res.ok) throw new Error(payload?.error || `Request failed (${res.status})`);
   return payload;
 }
@@ -171,8 +185,12 @@ function initStudentCommsPanel() {
       <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));">
         <form id="studentQaCreateForm" style="display:grid;gap:8px;">
           <h3 style="font-size:1rem;margin:0;">Start Q&A Thread</h3>
-          <input id="studentQaSubjectId" placeholder="Subject ID" style="padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.03);color:inherit;" required />
-          <input id="studentQaStaffEmail" placeholder="Staff email/username" style="padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.03);color:inherit;" required />
+          <select id="studentQaSubjectId" style="padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.03);color:inherit;" required>
+            <option value="">Loading subjects...</option>
+          </select>
+          <select id="studentQaStaffEmail" style="padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.03);color:inherit;" required>
+            <option value="">Select subject first</option>
+          </select>
           <input id="studentQaTitle" placeholder="Thread title" style="padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.03);color:inherit;" required />
           <textarea id="studentQaMessage" rows="3" placeholder="Your question" style="padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.03);color:inherit;" required></textarea>
           <button type="submit" class="submit-btn" style="padding:10px 14px;">Create Thread</button>
@@ -181,6 +199,8 @@ function initStudentCommsPanel() {
         <div>
           <h3 style="font-size:1rem;margin:0 0 8px;">My Q&A Threads</h3>
           <div id="studentQaThreadsList" style="display:grid;gap:8px;max-height:320px;overflow:auto;"></div>
+          <h3 style="font-size:1rem;margin:14px 0 8px;">Subject Materials</h3>
+          <div id="studentMaterialsList" style="display:grid;gap:8px;max-height:240px;overflow:auto;"></div>
         </div>
       </div>
     </div>
@@ -193,6 +213,9 @@ function initStudentCommsPanel() {
     announcements: panel.querySelector('#studentSectionAnnouncements'),
     qa: panel.querySelector('#studentSectionQa'),
   };
+  const subjectSelect = panel.querySelector('#studentQaSubjectId');
+  const staffSelect = panel.querySelector('#studentQaStaffEmail');
+  const subjectLabelById = new Map();
 
   function switchCommsMenu(key) {
     menuButtons.forEach((btn) => {
@@ -276,7 +299,7 @@ function initStudentCommsPanel() {
             <div class="result-title">#${t.id} · ${escapeHtml(t.title || '')}</div>
             <span class="status-badge ${t.is_open ? 'status-review' : 'status-graded'}">${t.is_open ? 'Open' : 'Closed'}</span>
           </div>
-          <div class="result-subtitle">Staff: ${escapeHtml(t.staff_email || '')} · Subject: ${escapeHtml(String(t.subject_id || ''))}</div>
+          <div class="result-subtitle">Staff: ${escapeHtml(t.staff_email || '')} · Subject: ${escapeHtml(subjectLabelById.get(String(t.subject_id || '')) || String(t.subject_id || ''))}</div>
           <div class="result-actions" style="margin-top:8px;">
             <button type="button" class="result-edit-btn" data-view-thread="${t.id}">View Messages</button>
           </div>
@@ -286,6 +309,101 @@ function initStudentCommsPanel() {
       list.innerHTML = `<div class="empty-state"><p style="color:#ffb8c7;">${escapeHtml(err.message || 'Failed')}</p></div>`;
     }
   }
+
+  async function refreshSubjectMaterials() {
+    const list = panel.querySelector('#studentMaterialsList');
+    if (!list) return;
+    const subjectId = Number(String(subjectSelect.value || '').trim());
+    if (!Number.isFinite(subjectId) || subjectId <= 0) {
+      list.innerHTML = '<div class="empty-state"><p>Select subject first.</p></div>';
+      return;
+    }
+
+    list.innerHTML = 'Loading...';
+    try {
+      const payload = await studentApiJson(`/api/student/materials?subjectId=${encodeURIComponent(subjectId)}`);
+      const rows = payload.materials || [];
+      if (!rows.length) {
+        list.innerHTML = '<div class="empty-state"><p>No materials for this subject yet.</p></div>';
+        return;
+      }
+      list.innerHTML = rows.map((m) => `
+        <div class="result-item">
+          <div class="result-header">
+            <div class="result-title">${escapeHtml(m.title || m.file_name || 'Material')}</div>
+            <span class="status-badge status-review">${escapeHtml(formatBytes(m.size_bytes || 0))}</span>
+          </div>
+          <div class="result-subtitle">${escapeHtml(m.file_name || '')}</div>
+          <div class="result-actions" style="margin-top:8px;">
+            <a class="result-edit-btn" href="/api/materials/${encodeURIComponent(m.id)}/file" target="_blank" rel="noopener">Open Material</a>
+          </div>
+        </div>
+      `).join('');
+    } catch (err) {
+      list.innerHTML = `<div class="empty-state"><p style="color:#ffb8c7;">${escapeHtml(err.message || 'Failed to load materials')}</p></div>`;
+    }
+  }
+
+  async function refreshStaffForSelectedSubject() {
+    if (!subjectSelect || !staffSelect) return;
+    const subjectId = Number(String(subjectSelect.value || '').trim());
+    if (!Number.isFinite(subjectId) || subjectId <= 0) {
+      staffSelect.innerHTML = '<option value="">Select subject first</option>';
+      return;
+    }
+
+    staffSelect.innerHTML = '<option value="">Loading staff...</option>';
+    try {
+      const payload = await studentApiJson(`/api/student/staff?subjectId=${encodeURIComponent(subjectId)}`);
+      const staff = payload.staff || [];
+      if (!staff.length) {
+        staffSelect.innerHTML = '<option value="">No mapped staff for this subject</option>';
+        return;
+      }
+      staffSelect.innerHTML = staff.map((s) => {
+        const email = String(s.email || '').trim();
+        const label = `${email} - ${String(s.full_name || '').trim()}`;
+        return `<option value="${escapeHtml(email)}">${escapeHtml(label)}</option>`;
+      }).join('');
+    } catch (err) {
+      if (String(err?.message || '').toLowerCase().includes('unauthorized')) return;
+      staffSelect.innerHTML = '<option value="">Failed to load staff</option>';
+      showToast(err.message || 'Failed to load staff', 'error');
+    }
+  }
+
+  async function refreshStudentSubjects() {
+    if (!subjectSelect) return;
+    subjectSelect.innerHTML = '<option value="">Loading subjects...</option>';
+    subjectLabelById.clear();
+    try {
+      const payload = await studentApiJson('/api/student/subjects');
+      const subjects = payload.subjects || [];
+      if (!subjects.length) {
+        subjectSelect.innerHTML = '<option value="">No assigned subjects</option>';
+        return;
+      }
+
+      subjectSelect.innerHTML = subjects.map((s) => {
+        const id = String(s.id || '');
+        const label = `${String(s.code || '').trim()} - ${String(s.name || '').trim()}`.trim();
+        subjectLabelById.set(id, label);
+        return `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`;
+      }).join('');
+      await refreshStaffForSelectedSubject();
+    } catch (err) {
+      subjectSelect.innerHTML = '<option value="">Failed to load subjects</option>';
+      if (staffSelect) {
+        staffSelect.innerHTML = '<option value="">Failed to load staff</option>';
+      }
+      showToast(err.message || 'Failed to load subjects', 'error');
+    }
+  }
+
+  subjectSelect.addEventListener('change', async () => {
+    await refreshStaffForSelectedSubject();
+    await refreshSubjectMaterials();
+  });
 
   panel.querySelector('#studentQaCreateForm').addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -297,7 +415,7 @@ function initStudentCommsPanel() {
 
     if (!Number.isFinite(subjectId) || subjectId <= 0 || !staffEmail || !title || !message) {
       msg.style.color = '#ffb8c7';
-      msg.textContent = 'Fill subject ID, staff, title and message.';
+      msg.textContent = 'Select subject, and fill staff, title, and message.';
       return;
     }
 
@@ -346,13 +464,181 @@ function initStudentCommsPanel() {
   });
 
   panel.querySelector('#studentCommsRefreshBtn').addEventListener('click', async () => {
-    await Promise.all([refreshEmergency(), refreshAnnouncements(), refreshQaThreads()]);
+    await Promise.all([refreshEmergency(), refreshAnnouncements()]);
+    await refreshStudentSubjects();
+    await refreshSubjectMaterials();
+    await refreshQaThreads();
     showToast('Announcements refreshed', 'success');
   });
 
-  refreshEmergency();
-  refreshAnnouncements();
-  refreshQaThreads();
+  (async () => {
+    await Promise.all([refreshEmergency(), refreshAnnouncements()]);
+    await refreshStudentSubjects();
+    await refreshSubjectMaterials();
+    await refreshQaThreads();
+  })();
+}
+
+function formatBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (!Number.isFinite(value) || value <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let unitIndex = 0;
+  let current = value;
+  while (current >= 1024 && unitIndex < units.length - 1) {
+    current /= 1024;
+    unitIndex += 1;
+  }
+  return `${current.toFixed(current >= 100 ? 0 : current >= 10 ? 1 : 2)} ${units[unitIndex]}`;
+}
+
+function initStudentPersonalNotesPanel() {
+  const host = document.getElementById('resultsSection');
+  if (!host || !host.parentNode) return;
+
+  const panel = document.createElement('section');
+  panel.className = 'glass-card results-card';
+  panel.style.marginTop = '18px';
+  panel.innerHTML = `
+    <div class="card-header">
+      <div class="card-icon">📁</div>
+      <div>
+        <h2>Personal Notes Storage</h2>
+        <p>Upload your own notes and files (500MB total student storage)</p>
+      </div>
+      <button type="button" class="nav-pass-btn" id="studentNotesRefreshBtn" style="margin-left:auto;">Refresh</button>
+    </div>
+    <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));">
+      <form id="studentNotesUploadForm" style="display:grid;gap:8px;">
+        <label style="font-weight:700;">Upload Personal Notes</label>
+        <input id="studentNotesFileInput" type="file" multiple accept=".pdf,.ppt,.pptx,.png,.jpg,.jpeg" style="padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.03);color:inherit;" />
+        <button type="submit" class="submit-btn" style="padding:10px 14px;">Upload Notes</button>
+        <p id="studentNotesQuotaText" style="margin:0;font-size:0.82rem;color:var(--text-muted);">Loading quota...</p>
+        <p id="studentNotesMsg" style="margin:0;font-size:0.82rem;color:var(--text-muted);"></p>
+      </form>
+      <div>
+        <h3 style="font-size:1rem;margin:0 0 8px;">My Uploaded Notes</h3>
+        <div id="studentNotesList" style="display:grid;gap:8px;max-height:320px;overflow:auto;"></div>
+      </div>
+    </div>
+  `;
+
+  host.parentNode.insertBefore(panel, host.nextSibling);
+
+  const notesList = panel.querySelector('#studentNotesList');
+  const notesMsg = panel.querySelector('#studentNotesMsg');
+  const quotaText = panel.querySelector('#studentNotesQuotaText');
+  const fileInput = panel.querySelector('#studentNotesFileInput');
+
+  function renderQuota(quota) {
+    if (!quota) {
+      quotaText.textContent = 'Quota unavailable';
+      return;
+    }
+    const used = formatBytes(quota.usedBytes);
+    const total = formatBytes(quota.totalBytes);
+    const remaining = formatBytes(quota.remainingBytes);
+    quotaText.textContent = `Used: ${used} / ${total} · Remaining: ${remaining}`;
+  }
+
+  async function refreshNotes() {
+    notesList.innerHTML = 'Loading...';
+    try {
+      const payload = await studentApiJson('/api/student/notes');
+      const notes = payload.notes || [];
+      renderQuota(payload.quota || null);
+
+      if (!notes.length) {
+        notesList.innerHTML = '<div class="empty-state"><p>No personal notes uploaded yet.</p></div>';
+        return;
+      }
+
+      notesList.innerHTML = notes.map((n) => {
+        const created = n.created_at ? new Date(n.created_at).toLocaleString() : '-';
+        const name = String(n.original_name || n.stored_name || 'file');
+        const stored = String(n.stored_name || '');
+        const href = String(n.file_url || '').trim();
+        return `
+          <div class="result-item">
+            <div class="result-header">
+              <div class="result-title">${escapeHtml(name)}</div>
+              <span class="status-badge status-review">${escapeHtml(formatBytes(n.size_bytes || 0))}</span>
+            </div>
+            <div class="result-subtitle">Uploaded: ${escapeHtml(created)}</div>
+            <div class="result-actions" style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">
+              <a class="result-edit-btn" href="${escapeHtml(href || '#')}" target="_blank" rel="noopener">Open</a>
+              <button type="button" class="result-delete-btn" data-delete-note="${escapeHtml(stored)}">Delete</button>
+            </div>
+          </div>
+        `;
+      }).join('');
+    } catch (err) {
+      notesList.innerHTML = `<div class="empty-state"><p style="color:#ffb8c7;">${escapeHtml(err.message || 'Failed to load notes')}</p></div>`;
+    }
+  }
+
+  panel.querySelector('#studentNotesUploadForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const files = Array.from(fileInput.files || []);
+    if (!files.length) {
+      notesMsg.style.color = '#ffb8c7';
+      notesMsg.textContent = 'Choose at least one file.';
+      return;
+    }
+
+    try {
+      const token = getStudentAuthTokenOrThrow();
+      const formData = new FormData();
+      files.forEach((f) => formData.append('files', f));
+
+      const res = await fetch('/api/student/notes', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+      const payload = await res.json().catch(() => ({}));
+
+      if (res.status === 401) {
+        handleStudentAuthExpired();
+        throw new Error('Unauthorized');
+      }
+      if (!res.ok) {
+        throw new Error(payload?.error || `Upload failed (${res.status})`);
+      }
+
+      notesMsg.style.color = '#9de9ff';
+      notesMsg.textContent = `Uploaded ${payload.files?.length || 0} file(s)`;
+      showToast('Personal notes uploaded', 'success');
+      fileInput.value = '';
+      await refreshNotes();
+    } catch (err) {
+      notesMsg.style.color = '#ffb8c7';
+      notesMsg.textContent = err.message || 'Failed to upload notes';
+    }
+  });
+
+  panel.addEventListener('click', async (e) => {
+    const deleteBtn = e.target.closest('[data-delete-note]');
+    if (!deleteBtn) return;
+    const storedName = String(deleteBtn.getAttribute('data-delete-note') || '').trim();
+    if (!storedName) return;
+    if (!confirm('Delete this note file?')) return;
+
+    try {
+      await studentApiJson(`/api/student/notes/${encodeURIComponent(storedName)}`, { method: 'DELETE' });
+      showToast('Note deleted', 'success');
+      await refreshNotes();
+    } catch (err) {
+      showToast(err.message || 'Failed to delete note', 'error');
+    }
+  });
+
+  panel.querySelector('#studentNotesRefreshBtn').addEventListener('click', async () => {
+    await refreshNotes();
+    showToast('Notes refreshed', 'success');
+  });
+
+  refreshNotes();
 }
 
 // ── Navbar ────────────────────────────────────────────────────

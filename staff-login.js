@@ -110,7 +110,7 @@ function initForm() {
   });
 
   document.getElementById('forgotBtn').addEventListener('click', () => {
-    showToast('📧 Contact: admin@chemtest.in for password reset', 'error');
+    showToast('📧 Contact: admin@unitest.in for password reset', 'error');
   });
 }
 
