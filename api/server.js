@@ -18,6 +18,18 @@ const syncStudentsOnStartup = String(process.env.STUDENTS_SYNC_ON_STARTUP || 'tr
 const resyncToken = process.env.RESYNC_TOKEN || '';
 const authPepper = process.env.AUTH_PEPPER || 'change_this_auth_pepper';
 const sessionTtlHours = Number(process.env.AUTH_SESSION_TTL_HOURS || 24);
+const studentQuotaBytesDefault = Number(process.env.STUDENT_QUOTA_BYTES || 500 * 1024 * 1024);
+
+const allowedStudentUploadMimeTypes = new Set([
+  'application/pdf',
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'image/png',
+  'image/jpeg',
+  'image/jpg',
+]);
+
+const allowedStudentUploadExtensions = new Set(['.pdf', '.ppt', '.pptx', '.png', '.jpg', '.jpeg']);
 
 const staffDefaultEmail = (process.env.STAFF_DEFAULT_EMAIL || 'admin@chemtest.in').trim().toLowerCase();
 const staffDefaultPassword = process.env.STAFF_DEFAULT_PASSWORD || 'ChangeThisNow_2026!';
@@ -238,6 +250,14 @@ const excelUpload = multer({
   },
 });
 
+const materialUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: {
+    files: 1,
+    fileSize: 50 * 1024 * 1024,
+  },
+});
+
 function hashPassword(value) {
   return crypto.createHash('sha256').update(`${String(value)}:${authPepper}`).digest('hex');
 }
@@ -292,6 +312,200 @@ function requireSuperAdmin(req, res, next) {
   }
   req.auth = session;
   next();
+}
+
+function normalizeRegNo(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function normalizeStaffEmail(value) {
+  return String(value || '').trim().toLowerCase();
+}
+
+function normalizeSubjectCode(value) {
+  return String(value || '').trim().toUpperCase();
+}
+
+function defaultPermissionsForRole(roleName) {
+  const role = String(roleName || '').trim().toLowerCase();
+  if (role === 'super admin' || role === 'superadmin') {
+    return {
+      manageStaff: true,
+      manageSubjects: true,
+      manageAssignments: true,
+      manageDatabase: true,
+      viewAuditLogs: true,
+      manageFeatureFlags: true,
+      sendAnnouncements: true,
+      uploadMaterials: true,
+    };
+  }
+  return {
+    manageStaff: false,
+    manageSubjects: false,
+    manageAssignments: false,
+    manageDatabase: false,
+    viewAuditLogs: false,
+    manageFeatureFlags: false,
+    sendAnnouncements: true,
+    uploadMaterials: true,
+  };
+}
+
+async function getStaffPermissions(email, roleName) {
+  const normalizedEmail = normalizeStaffEmail(email);
+  const result = await pool.query(
+    `SELECT permissions_json
+     FROM role_policies
+     WHERE staff_email = $1`,
+    [normalizedEmail]
+  );
+  const defaults = defaultPermissionsForRole(roleName);
+  if (!result.rows.length || !result.rows[0].permissions_json) {
+    return defaults;
+  }
+  return { ...defaults, ...result.rows[0].permissions_json };
+}
+
+async function hasPermission(session, permissionKey) {
+  if (!session || session.role !== 'staff') return false;
+  if (isSuperAdminSession(session)) return true;
+  const perms = await getStaffPermissions(session.email, session.staffRole || session.roleName);
+  return Boolean(perms?.[permissionKey]);
+}
+
+async function writeAuditLog({ actor, action, targetType, targetId, beforeJson = null, afterJson = null }) {
+  try {
+    await pool.query(
+      `INSERT INTO audit_logs (actor, action, target_type, target_id, before_json, after_json)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb)`,
+      [
+        String(actor || ''),
+        String(action || ''),
+        String(targetType || ''),
+        targetId === undefined || targetId === null ? null : String(targetId),
+        beforeJson ? JSON.stringify(beforeJson) : null,
+        afterJson ? JSON.stringify(afterJson) : null,
+      ]
+    );
+  } catch (err) {
+    console.warn('[AUDIT] Failed to write audit log:', err.message);
+  }
+}
+
+async function getDefaultSubjectId() {
+  const result = await pool.query(`SELECT id FROM subjects WHERE code = 'CHEMISTRY' LIMIT 1`);
+  if (!result.rows.length) throw new Error('Default subject CHEMISTRY not found');
+  return Number(result.rows[0].id);
+}
+
+async function ensureStudentAssignedToSubject(regNo, subjectId) {
+  const result = await pool.query(
+    `SELECT 1
+     FROM student_subject_assignments
+     WHERE reg_no = $1 AND subject_id = $2 AND is_active = TRUE
+     LIMIT 1`,
+    [regNo, subjectId]
+  );
+  return result.rows.length > 0;
+}
+
+async function ensureStaffAssignedToSubject(staffEmail, subjectId) {
+  const result = await pool.query(
+    `SELECT 1
+     FROM staff_subject_assignments
+     WHERE staff_email = $1 AND subject_id = $2 AND is_active = TRUE
+     LIMIT 1`,
+    [staffEmail, subjectId]
+  );
+  return result.rows.length > 0;
+}
+
+async function ensureStaffMappedToStudentForSubject(staffEmail, regNo, subjectId) {
+  const result = await pool.query(
+    `SELECT 1
+     FROM student_staff_subject_assignments
+     WHERE staff_email = $1 AND reg_no = $2 AND subject_id = $3 AND is_active = TRUE
+     LIMIT 1`,
+    [staffEmail, regNo, subjectId]
+  );
+  return result.rows.length > 0;
+}
+
+async function getStudentUsedBytes(regNo) {
+  const result = await pool.query(
+    `SELECT COALESCE(SUM(size_bytes), 0)::bigint AS used
+     FROM uploads
+     WHERE owner_reg_no = $1`,
+    [regNo]
+  );
+  return Number(result.rows[0]?.used || 0);
+}
+
+async function upsertStudentQuota(regNo) {
+  const usedBytes = await getStudentUsedBytes(regNo);
+  const quotaBytes = Math.max(studentQuotaBytesDefault, 1);
+  await pool.query(
+    `INSERT INTO student_storage_quotas (reg_no, quota_bytes, used_bytes, updated_at)
+     VALUES ($1, $2, $3, NOW())
+     ON CONFLICT (reg_no)
+     DO UPDATE SET quota_bytes = EXCLUDED.quota_bytes,
+                   used_bytes = EXCLUDED.used_bytes,
+                   updated_at = NOW()`,
+    [regNo, quotaBytes, usedBytes]
+  );
+  return { quotaBytes, usedBytes, remainingBytes: Math.max(quotaBytes - usedBytes, 0) };
+}
+
+function getLiveSessionsSnapshot() {
+  const now = Date.now();
+  const rows = [];
+  for (const [token, session] of sessions.entries()) {
+    if (!session || session.expiresAt <= now) continue;
+    rows.push({
+      token,
+      role: session.role,
+      regNo: session.regNo || null,
+      email: session.email || null,
+      name: session.name || null,
+      expiresAt: session.expiresAt,
+      ttlMs: Math.max(session.expiresAt - now, 0),
+    });
+  }
+  return rows;
+}
+
+const backupTables = [
+  'subjects',
+  'staff_accounts',
+  'students',
+  'student_auth',
+  'staff_subject_assignments',
+  'student_subject_assignments',
+  'student_staff_subject_assignments',
+  'broadcast_messages',
+  'student_message_reads',
+  'qa_threads',
+  'qa_messages',
+  'submissions',
+  'official_materials',
+  'student_storage_quotas',
+];
+
+async function readTableForBackup(tableName) {
+  const result = await pool.query(`SELECT * FROM ${tableName}`);
+  return result.rows;
+}
+
+async function restoreTableRows(client, tableName, rows) {
+  if (!Array.isArray(rows) || !rows.length) return;
+  const columns = Object.keys(rows[0]);
+  for (const row of rows) {
+    const values = columns.map((col) => row[col]);
+    const placeholders = values.map((_, idx) => `$${idx + 1}`).join(', ');
+    const cols = columns.join(', ');
+    await client.query(`INSERT INTO ${tableName} (${cols}) VALUES (${placeholders})`, values);
+  }
 }
 
 setInterval(() => {
@@ -418,6 +632,118 @@ app.get('/admin/staff', requireSuperAdmin, async (_req, res, next) => {
   }
 });
 
+app.get('/admin/students', requireSuperAdmin, async (_req, res, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT reg_no, full_name, stream, section, created_at
+       FROM students
+       ORDER BY reg_no ASC`
+    );
+    res.json({ students: result.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/admin/role-policies', requireSuperAdmin, async (_req, res, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT staff_email, permissions_json, created_at, updated_at
+       FROM role_policies
+       ORDER BY staff_email ASC`
+    );
+    res.json({ policies: result.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/admin/role-policies/:email', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const email = normalizeStaffEmail(req.params.email);
+    const permissions = req.body?.permissions || {};
+    if (!email || typeof permissions !== 'object' || Array.isArray(permissions)) {
+      return res.status(400).json({ error: 'Invalid policy payload' });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO role_policies (staff_email, permissions_json)
+       VALUES ($1, $2::jsonb)
+       ON CONFLICT (staff_email)
+       DO UPDATE SET permissions_json = EXCLUDED.permissions_json,
+                     updated_at = NOW()
+       RETURNING staff_email, permissions_json, created_at, updated_at`,
+      [email, JSON.stringify(permissions)]
+    );
+
+    await writeAuditLog({
+      actor: req.auth?.email || 'superadmin',
+      action: 'role_policy.upsert',
+      targetType: 'role_policy',
+      targetId: email,
+      afterJson: result.rows[0],
+    });
+
+    res.json({ ok: true, policy: result.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/superadmin/audit-logs', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const actor = String(req.query?.actor || '').trim();
+    const action = String(req.query?.action || '').trim();
+    const targetType = String(req.query?.targetType || '').trim();
+    const limit = Math.min(1000, Math.max(1, Number(req.query?.limit || 100)));
+    const format = String(req.query?.format || '').trim().toLowerCase();
+
+    const params = [];
+    const where = ['1=1'];
+    if (actor) {
+      params.push(actor);
+      where.push(`actor = $${params.length}`);
+    }
+    if (action) {
+      params.push(action);
+      where.push(`action = $${params.length}`);
+    }
+    if (targetType) {
+      params.push(targetType);
+      where.push(`target_type = $${params.length}`);
+    }
+    params.push(limit);
+
+    const result = await pool.query(
+      `SELECT *
+       FROM audit_logs
+       WHERE ${where.join(' AND ')}
+       ORDER BY created_at DESC
+       LIMIT $${params.length}`,
+      params
+    );
+
+    if (format === 'csv') {
+      const header = 'id,actor,action,target_type,target_id,created_at';
+      const rows = result.rows.map((r) => [
+        r.id,
+        JSON.stringify(r.actor || ''),
+        JSON.stringify(r.action || ''),
+        JSON.stringify(r.target_type || ''),
+        JSON.stringify(r.target_id || ''),
+        JSON.stringify(r.created_at || ''),
+      ].join(','));
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', 'attachment; filename="audit-logs.csv"');
+      return res.send([header, ...rows].join('\n'));
+    }
+
+    res.json({ logs: result.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
 app.post('/admin/staff', requireSuperAdmin, async (req, res, next) => {
   try {
     const email = String(req.body?.email || '').trim().toLowerCase();
@@ -445,7 +771,1289 @@ app.post('/admin/staff', requireSuperAdmin, async (req, res, next) => {
       [email, fullName, role, hashPassword(password)]
     );
 
+    await writeAuditLog({
+      actor: req.auth?.email || req.auth?.name || 'superadmin',
+      action: 'staff.upsert',
+      targetType: 'staff',
+      targetId: result.rows[0]?.email,
+      afterJson: result.rows[0],
+    });
+
     res.json({ ok: true, staff: result.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.patch('/admin/staff/:email/reset-password', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const email = normalizeStaffEmail(req.params.email);
+    const newPassword = String(req.body?.password || '').trim();
+    if (!email || newPassword.length < 6) {
+      return res.status(400).json({ error: 'Valid email and password are required' });
+    }
+
+    const result = await pool.query(
+      `UPDATE staff_accounts
+       SET password_hash = $1, updated_at = NOW()
+       WHERE email = $2
+       RETURNING email, full_name, role, is_active, created_at, updated_at`,
+      [hashPassword(newPassword), email]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Staff not found' });
+
+    await writeAuditLog({
+      actor: req.auth?.email || 'superadmin',
+      action: 'staff.reset_password',
+      targetType: 'staff',
+      targetId: email,
+    });
+
+    res.json({ ok: true, staff: result.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/admin/staff/:email/activate', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const email = normalizeStaffEmail(req.params.email);
+    if (!email) return res.status(400).json({ error: 'Invalid email' });
+    const result = await pool.query(
+      `UPDATE staff_accounts
+       SET is_active = TRUE, updated_at = NOW()
+       WHERE email = $1
+       RETURNING email, full_name, role, is_active, created_at, updated_at`,
+      [email]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Staff not found' });
+
+    await writeAuditLog({
+      actor: req.auth?.email || 'superadmin',
+      action: 'staff.activate',
+      targetType: 'staff',
+      targetId: email,
+      afterJson: result.rows[0],
+    });
+
+    res.json({ ok: true, staff: result.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/admin/staff/:email/deactivate', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const email = normalizeStaffEmail(req.params.email);
+    if (!email) return res.status(400).json({ error: 'Invalid email' });
+    const result = await pool.query(
+      `UPDATE staff_accounts
+       SET is_active = FALSE, updated_at = NOW()
+       WHERE email = $1
+       RETURNING email, full_name, role, is_active, created_at, updated_at`,
+      [email]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Staff not found' });
+
+    await writeAuditLog({
+      actor: req.auth?.email || 'superadmin',
+      action: 'staff.deactivate',
+      targetType: 'staff',
+      targetId: email,
+      afterJson: result.rows[0],
+    });
+
+    res.json({ ok: true, staff: result.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete('/admin/staff/:email', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const email = normalizeStaffEmail(req.params.email);
+    if (!email) return res.status(400).json({ error: 'Invalid email' });
+    if (email === normalizeStaffEmail(req.auth?.email || '')) {
+      return res.status(400).json({ error: 'You cannot delete your own account' });
+    }
+
+    const result = await pool.query(
+      `DELETE FROM staff_accounts
+       WHERE email = $1
+       RETURNING email, full_name, role, is_active, created_at, updated_at`,
+      [email]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Staff not found' });
+
+    await writeAuditLog({
+      actor: req.auth?.email || 'superadmin',
+      action: 'staff.delete',
+      targetType: 'staff',
+      targetId: email,
+      beforeJson: result.rows[0],
+    });
+
+    res.json({ ok: true, deleted: result.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/admin/subjects', requireSuperAdmin, async (_req, res, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, code, name, is_active, created_at, updated_at
+       FROM subjects
+       ORDER BY is_active DESC, code ASC`
+    );
+    res.json({ subjects: result.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/admin/subjects', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const code = normalizeSubjectCode(req.body?.code);
+    const name = String(req.body?.name || '').trim();
+    if (!code || !name) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO subjects (code, name, is_active)
+       VALUES ($1, $2, TRUE)
+       ON CONFLICT (code)
+       DO UPDATE SET name = EXCLUDED.name,
+                     is_active = TRUE,
+                     updated_at = NOW()
+       RETURNING id, code, name, is_active, created_at, updated_at`,
+      [code, name]
+    );
+
+    res.json({ ok: true, subject: result.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.patch('/admin/subjects/:id', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: 'Invalid subject id' });
+    }
+
+    const updates = [];
+    const params = [];
+
+    if (req.body?.name !== undefined) {
+      const name = String(req.body?.name || '').trim();
+      if (!name) return res.status(400).json({ error: 'Invalid subject name' });
+      params.push(name);
+      updates.push(`name = $${params.length}`);
+    }
+
+    if (req.body?.code !== undefined) {
+      const code = normalizeSubjectCode(req.body?.code);
+      if (!code) return res.status(400).json({ error: 'Invalid subject code' });
+      params.push(code);
+      updates.push(`code = $${params.length}`);
+    }
+
+    if (req.body?.isActive !== undefined) {
+      params.push(Boolean(req.body?.isActive));
+      updates.push(`is_active = $${params.length}`);
+    }
+
+    if (!updates.length) {
+      return res.status(400).json({ error: 'No updatable fields provided' });
+    }
+
+    updates.push('updated_at = NOW()');
+    params.push(id);
+
+    const result = await pool.query(
+      `UPDATE subjects
+       SET ${updates.join(', ')}
+       WHERE id = $${params.length}
+       RETURNING id, code, name, is_active, created_at, updated_at`,
+      params
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: 'Subject not found' });
+    }
+
+    res.json({ ok: true, subject: result.rows[0] });
+  } catch (err) {
+    if (err && err.code === '23505') {
+      return res.status(409).json({ error: 'Subject code already exists' });
+    }
+    next(err);
+  }
+});
+
+app.delete('/admin/subjects/:id', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) {
+      return res.status(400).json({ error: 'Invalid subject id' });
+    }
+
+    const result = await pool.query(
+      `UPDATE subjects
+       SET is_active = FALSE, updated_at = NOW()
+       WHERE id = $1
+       RETURNING id, code, name, is_active, created_at, updated_at`,
+      [id]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: 'Subject not found' });
+    }
+
+    res.json({ ok: true, subject: result.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/admin/assign/staff-subject', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const staffEmail = normalizeStaffEmail(req.body?.staffEmail);
+    const subjectId = Number(req.body?.subjectId);
+    if (!staffEmail || !Number.isFinite(subjectId) || subjectId <= 0) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO staff_subject_assignments (staff_email, subject_id, is_active)
+       VALUES ($1, $2, TRUE)
+       ON CONFLICT (staff_email, subject_id)
+       DO UPDATE SET is_active = TRUE, updated_at = NOW()
+       RETURNING id, staff_email, subject_id, is_active, created_at, updated_at`,
+      [staffEmail, subjectId]
+    );
+
+    res.json({ ok: true, assignment: result.rows[0] });
+  } catch (err) {
+    if (err && err.code === '23503') {
+      return res.status(400).json({ error: 'Invalid staffEmail or subjectId' });
+    }
+    next(err);
+  }
+});
+
+app.post('/admin/assign/student-subject', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const regNo = normalizeRegNo(req.body?.regNo);
+    const subjectId = Number(req.body?.subjectId);
+    if (!regNo || !Number.isFinite(subjectId) || subjectId <= 0) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO student_subject_assignments (reg_no, subject_id, is_active)
+       VALUES ($1, $2, TRUE)
+       ON CONFLICT (reg_no, subject_id)
+       DO UPDATE SET is_active = TRUE, updated_at = NOW()
+       RETURNING id, reg_no, subject_id, is_active, created_at, updated_at`,
+      [regNo, subjectId]
+    );
+
+    res.json({ ok: true, assignment: result.rows[0] });
+  } catch (err) {
+    if (err && err.code === '23503') {
+      return res.status(400).json({ error: 'Invalid regNo or subjectId' });
+    }
+    next(err);
+  }
+});
+
+app.post('/admin/assign/student-staff-subject', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const regNo = normalizeRegNo(req.body?.regNo);
+    const staffEmail = normalizeStaffEmail(req.body?.staffEmail);
+    const subjectId = Number(req.body?.subjectId);
+    if (!regNo || !staffEmail || !Number.isFinite(subjectId) || subjectId <= 0) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO student_staff_subject_assignments (reg_no, staff_email, subject_id, is_active)
+       VALUES ($1, $2, $3, TRUE)
+       ON CONFLICT (reg_no, staff_email, subject_id)
+       DO UPDATE SET is_active = TRUE, updated_at = NOW()
+       RETURNING id, reg_no, staff_email, subject_id, is_active, created_at, updated_at`,
+      [regNo, staffEmail, subjectId]
+    );
+
+    res.json({ ok: true, assignment: result.rows[0] });
+  } catch (err) {
+    if (err && err.code === '23503') {
+      return res.status(400).json({ error: 'Invalid regNo, staffEmail or subjectId' });
+    }
+    next(err);
+  }
+});
+
+app.delete('/admin/assign/student-staff-subject', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const regNo = normalizeRegNo(req.body?.regNo || req.query?.regNo);
+    const staffEmail = normalizeStaffEmail(req.body?.staffEmail || req.query?.staffEmail);
+    const subjectId = Number(req.body?.subjectId || req.query?.subjectId);
+    if (!regNo || !staffEmail || !Number.isFinite(subjectId) || subjectId <= 0) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const result = await pool.query(
+      `UPDATE student_staff_subject_assignments
+       SET is_active = FALSE, updated_at = NOW()
+       WHERE reg_no = $1 AND staff_email = $2 AND subject_id = $3
+       RETURNING id, reg_no, staff_email, subject_id, is_active, created_at, updated_at`,
+      [regNo, staffEmail, subjectId]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: 'Assignment not found' });
+    }
+
+    res.json({ ok: true, assignment: result.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/admin/assignments/matrix', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const subjectId = req.query?.subjectId ? Number(req.query.subjectId) : null;
+    const staffEmail = req.query?.staffEmail ? normalizeStaffEmail(req.query.staffEmail) : '';
+    const regNo = req.query?.regNo ? normalizeRegNo(req.query.regNo) : '';
+
+    const params = [];
+    const where = ['a.is_active = TRUE'];
+
+    if (Number.isFinite(subjectId) && subjectId > 0) {
+      params.push(subjectId);
+      where.push(`a.subject_id = $${params.length}`);
+    }
+    if (staffEmail) {
+      params.push(staffEmail);
+      where.push(`a.staff_email = $${params.length}`);
+    }
+    if (regNo) {
+      params.push(regNo);
+      where.push(`a.reg_no = $${params.length}`);
+    }
+
+    const result = await pool.query(
+      `SELECT a.id,
+              a.reg_no,
+              s.full_name AS student_name,
+              a.staff_email,
+              st.full_name AS staff_name,
+              a.subject_id,
+              sub.code AS subject_code,
+              sub.name AS subject_name,
+              a.is_active,
+              a.created_at,
+              a.updated_at
+       FROM student_staff_subject_assignments a
+       JOIN students s ON s.reg_no = a.reg_no
+       JOIN staff_accounts st ON st.email = a.staff_email
+       JOIN subjects sub ON sub.id = a.subject_id
+       WHERE ${where.join(' AND ')}
+       ORDER BY sub.code ASC, a.staff_email ASC, a.reg_no ASC`,
+      params
+    );
+
+    res.json({ assignments: result.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/staff/subjects', requireAuth('staff'), async (req, res, next) => {
+  try {
+    const email = normalizeStaffEmail(req.auth.email);
+    const result = await pool.query(
+      `SELECT s.id, s.code, s.name
+       FROM staff_subject_assignments a
+       JOIN subjects s ON s.id = a.subject_id
+       WHERE a.staff_email = $1 AND a.is_active = TRUE AND s.is_active = TRUE
+       ORDER BY s.code ASC`,
+      [email]
+    );
+    res.json({ subjects: result.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/student/subjects', requireAuth('student'), async (req, res, next) => {
+  try {
+    const regNo = normalizeRegNo(req.auth.regNo);
+    const result = await pool.query(
+      `SELECT s.id, s.code, s.name
+       FROM student_subject_assignments a
+       JOIN subjects s ON s.id = a.subject_id
+       WHERE a.reg_no = $1 AND a.is_active = TRUE AND s.is_active = TRUE
+       ORDER BY s.code ASC`,
+      [regNo]
+    );
+    res.json({ subjects: result.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/staff/students', requireAuth('staff'), async (req, res, next) => {
+  try {
+    const subjectId = Number(req.query?.subjectId);
+    const email = normalizeStaffEmail(req.auth.email);
+    if (!Number.isFinite(subjectId) || subjectId <= 0) {
+      return res.status(400).json({ error: 'subjectId is required' });
+    }
+
+    const canAccessSubject = await ensureStaffAssignedToSubject(email, subjectId);
+    if (!canAccessSubject) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const result = await pool.query(
+      `SELECT s.reg_no, s.full_name, s.stream, s.section
+       FROM student_staff_subject_assignments a
+       JOIN students s ON s.reg_no = a.reg_no
+       WHERE a.staff_email = $1
+         AND a.subject_id = $2
+         AND a.is_active = TRUE
+       ORDER BY s.reg_no ASC`,
+      [email, subjectId]
+    );
+    res.json({ students: result.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/staff/materials', requireAuth('staff'), materialUpload.single('file'), async (req, res, next) => {
+  try {
+    const subjectId = Number(req.body?.subjectId);
+    const title = String(req.body?.title || '').trim();
+    const description = String(req.body?.description || '').trim();
+    const staffEmail = normalizeStaffEmail(req.auth.email);
+    const { file } = req;
+
+    if (!Number.isFinite(subjectId) || subjectId <= 0 || !title || !file) {
+      return res.status(400).json({ error: 'subjectId, title and file are required' });
+    }
+
+    const canAccessSubject = await ensureStaffAssignedToSubject(staffEmail, subjectId);
+    if (!canAccessSubject) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const result = await pool.query(
+      `INSERT INTO official_materials (
+         subject_id, staff_email, title, description,
+         file_name, mime_type, size_bytes, file_data, is_active
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, TRUE)
+       RETURNING id, subject_id, staff_email, title, description, file_name, mime_type, size_bytes, is_active, created_at, updated_at`,
+      [subjectId, staffEmail, title, description || null, file.originalname, file.mimetype, file.size, file.buffer]
+    );
+
+    res.status(201).json({ ok: true, material: result.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/staff/materials', requireAuth('staff'), async (req, res, next) => {
+  try {
+    const subjectId = req.query?.subjectId ? Number(req.query.subjectId) : null;
+    const staffEmail = normalizeStaffEmail(req.auth.email);
+    const params = [staffEmail];
+    const where = ['staff_email = $1'];
+    if (Number.isFinite(subjectId) && subjectId > 0) {
+      const canAccessSubject = await ensureStaffAssignedToSubject(staffEmail, subjectId);
+      if (!canAccessSubject) return res.status(403).json({ error: 'Forbidden' });
+      params.push(subjectId);
+      where.push(`subject_id = $${params.length}`);
+    }
+    const result = await pool.query(
+      `SELECT id, subject_id, staff_email, title, description, file_name, mime_type, size_bytes, is_active, created_at, updated_at
+       FROM official_materials
+       WHERE ${where.join(' AND ')}
+       ORDER BY created_at DESC`,
+      params
+    );
+    res.json({ materials: result.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/student/materials', requireAuth('student'), async (req, res, next) => {
+  try {
+    const regNo = normalizeRegNo(req.auth.regNo);
+    const subjectId = req.query?.subjectId ? Number(req.query.subjectId) : null;
+    const params = [regNo];
+    const where = [
+      `m.is_active = TRUE`,
+      `EXISTS (
+        SELECT 1
+        FROM student_subject_assignments ssa
+        WHERE ssa.reg_no = $1
+          AND ssa.subject_id = m.subject_id
+          AND ssa.is_active = TRUE
+      )`,
+    ];
+    if (Number.isFinite(subjectId) && subjectId > 0) {
+      params.push(subjectId);
+      where.push(`m.subject_id = $${params.length}`);
+    }
+    const result = await pool.query(
+      `SELECT m.id, m.subject_id, sub.code AS subject_code, sub.name AS subject_name,
+              m.title, m.description, m.file_name, m.mime_type, m.size_bytes, m.created_at
+       FROM official_materials m
+       JOIN subjects sub ON sub.id = m.subject_id
+       WHERE ${where.join(' AND ')}
+       ORDER BY m.created_at DESC`,
+      params
+    );
+    res.json({ materials: result.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/materials/:id/file', requireAuth(['staff', 'student']), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'Invalid material id' });
+
+    const result = await pool.query(
+      `SELECT * FROM official_materials WHERE id = $1 AND is_active = TRUE`,
+      [id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Material not found' });
+    const material = result.rows[0];
+
+    if (req.auth.role === 'staff') {
+      const canAccess = await ensureStaffAssignedToSubject(normalizeStaffEmail(req.auth.email), Number(material.subject_id));
+      if (!canAccess) return res.status(403).json({ error: 'Forbidden' });
+    } else {
+      const canAccess = await ensureStudentAssignedToSubject(normalizeRegNo(req.auth.regNo), Number(material.subject_id));
+      if (!canAccess) return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    if (material.mime_type) res.type(material.mime_type);
+    res.setHeader('Content-Disposition', `inline; filename="${path.basename(String(material.file_name || 'material'))}"`);
+    return res.send(material.file_data);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.patch('/staff/materials/:id', requireAuth('staff'), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const title = req.body?.title;
+    const description = req.body?.description;
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'Invalid material id' });
+
+    const base = await pool.query('SELECT id, subject_id, staff_email FROM official_materials WHERE id = $1', [id]);
+    if (!base.rows.length) return res.status(404).json({ error: 'Material not found' });
+    const material = base.rows[0];
+    if (normalizeStaffEmail(material.staff_email) !== normalizeStaffEmail(req.auth.email)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const updates = [];
+    const params = [];
+    if (title !== undefined) {
+      const normalized = String(title || '').trim();
+      if (!normalized) return res.status(400).json({ error: 'Invalid title' });
+      params.push(normalized);
+      updates.push(`title = $${params.length}`);
+    }
+    if (description !== undefined) {
+      params.push(String(description || '').trim() || null);
+      updates.push(`description = $${params.length}`);
+    }
+    if (!updates.length) return res.status(400).json({ error: 'No updatable fields provided' });
+    updates.push('updated_at = NOW()');
+    params.push(id);
+
+    const result = await pool.query(
+      `UPDATE official_materials
+       SET ${updates.join(', ')}
+       WHERE id = $${params.length}
+       RETURNING id, subject_id, staff_email, title, description, file_name, mime_type, size_bytes, is_active, created_at, updated_at`,
+      params
+    );
+
+    res.json({ ok: true, material: result.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete('/staff/materials/:id', requireAuth('staff'), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'Invalid material id' });
+
+    const result = await pool.query(
+      `UPDATE official_materials
+       SET is_active = FALSE, updated_at = NOW()
+       WHERE id = $1 AND staff_email = $2
+       RETURNING id`,
+      [id, normalizeStaffEmail(req.auth.email)]
+    );
+
+    if (!result.rows.length) return res.status(404).json({ error: 'Material not found' });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/staff/messages/broadcast', requireAuth('staff'), async (req, res, next) => {
+  try {
+    const title = String(req.body?.title || '').trim();
+    const message = String(req.body?.message || '').trim();
+    const startsAt = req.body?.startsAt ? new Date(req.body.startsAt) : null;
+    const expiresAt = req.body?.expiresAt ? new Date(req.body.expiresAt) : null;
+    if (!title || !message) return res.status(400).json({ error: 'Missing required fields' });
+
+    const result = await pool.query(
+      `INSERT INTO broadcast_messages (created_by_staff_email, title, message, is_active, starts_at, expires_at)
+       VALUES ($1, $2, $3, TRUE, $4, $5)
+       RETURNING *`,
+      [normalizeStaffEmail(req.auth.email), title, message, startsAt, expiresAt]
+    );
+    res.status(201).json({ ok: true, message: result.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/staff/messages/broadcast', requireAuth('staff'), async (req, res, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT *
+       FROM broadcast_messages
+       WHERE created_by_staff_email = $1
+       ORDER BY created_at DESC`,
+      [normalizeStaffEmail(req.auth.email)]
+    );
+    res.json({ messages: result.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.patch('/staff/messages/broadcast/:id', requireAuth('staff'), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'Invalid message id' });
+
+    const updates = [];
+    const params = [];
+    if (req.body?.title !== undefined) {
+      const title = String(req.body?.title || '').trim();
+      if (!title) return res.status(400).json({ error: 'Invalid title' });
+      params.push(title);
+      updates.push(`title = $${params.length}`);
+    }
+    if (req.body?.message !== undefined) {
+      const message = String(req.body?.message || '').trim();
+      if (!message) return res.status(400).json({ error: 'Invalid message' });
+      params.push(message);
+      updates.push(`message = $${params.length}`);
+    }
+    if (req.body?.isActive !== undefined) {
+      params.push(Boolean(req.body?.isActive));
+      updates.push(`is_active = $${params.length}`);
+    }
+    if (!updates.length) return res.status(400).json({ error: 'No updatable fields provided' });
+    updates.push('updated_at = NOW()');
+    params.push(id, normalizeStaffEmail(req.auth.email));
+
+    const result = await pool.query(
+      `UPDATE broadcast_messages
+       SET ${updates.join(', ')}
+       WHERE id = $${params.length - 1} AND created_by_staff_email = $${params.length}
+       RETURNING *`,
+      params
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Message not found' });
+    res.json({ ok: true, message: result.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete('/staff/messages/broadcast/:id', requireAuth('staff'), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'Invalid message id' });
+    const result = await pool.query(
+      `UPDATE broadcast_messages
+       SET is_active = FALSE, updated_at = NOW()
+       WHERE id = $1 AND created_by_staff_email = $2
+       RETURNING id`,
+      [id, normalizeStaffEmail(req.auth.email)]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Message not found' });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/student/messages/broadcast', requireAuth('student'), async (_req, res, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, title, message, starts_at, expires_at, created_at, updated_at
+       FROM broadcast_messages
+       WHERE is_active = TRUE
+         AND (starts_at IS NULL OR starts_at <= NOW())
+         AND (expires_at IS NULL OR expires_at >= NOW())
+       ORDER BY created_at DESC`
+    );
+    res.json({ messages: result.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/staff/messages/announcement', requireAuth('staff'), async (req, res, next) => {
+  try {
+    if (!(await hasPermission(req.auth, 'sendAnnouncements'))) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const title = String(req.body?.title || '').trim();
+    const message = String(req.body?.message || '').trim();
+    const channelType = String(req.body?.channelType || 'global').trim().toLowerCase();
+    const subjectId = req.body?.subjectId ? Number(req.body.subjectId) : null;
+    const classroom = String(req.body?.classroom || '').trim().toUpperCase() || null;
+    const targetRegNo = normalizeRegNo(req.body?.targetRegNo || '') || null;
+    const startsAt = req.body?.startsAt ? new Date(req.body.startsAt) : null;
+    const expiresAt = req.body?.expiresAt ? new Date(req.body.expiresAt) : null;
+    const priority = String(req.body?.priority || 'normal').trim().toLowerCase();
+
+    if (!title || !message) return res.status(400).json({ error: 'Missing required fields' });
+
+    const result = await pool.query(
+      `INSERT INTO broadcast_messages (
+         created_by_staff_email, title, message, is_active,
+         starts_at, expires_at, channel_type, subject_id, classroom, target_reg_no, priority
+       ) VALUES ($1, $2, $3, TRUE, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING *`,
+      [
+        normalizeStaffEmail(req.auth.email),
+        title,
+        message,
+        startsAt,
+        expiresAt,
+        channelType,
+        Number.isFinite(subjectId) && subjectId > 0 ? subjectId : null,
+        classroom,
+        targetRegNo,
+        priority,
+      ]
+    );
+
+    await writeAuditLog({
+      actor: req.auth.email,
+      action: 'announcement.create',
+      targetType: 'broadcast_message',
+      targetId: result.rows[0]?.id,
+      afterJson: result.rows[0],
+    });
+
+    res.status(201).json({ ok: true, announcement: result.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/student/messages/announcements', requireAuth('student'), async (req, res, next) => {
+  try {
+    const regNo = normalizeRegNo(req.auth.regNo);
+    const classRoom = String(req.query?.classroom || '').trim().toUpperCase();
+    const subjectId = req.query?.subjectId ? Number(req.query.subjectId) : null;
+
+    const params = [regNo, classRoom || null, Number.isFinite(subjectId) ? subjectId : null];
+    const result = await pool.query(
+      `SELECT m.id,
+              m.title,
+              m.message,
+              m.channel_type,
+              m.subject_id,
+              m.classroom,
+              m.target_reg_no,
+              m.priority,
+              m.starts_at,
+              m.expires_at,
+              m.created_at,
+              (r.message_id IS NOT NULL) AS is_read,
+              r.read_at
+       FROM broadcast_messages m
+       LEFT JOIN student_message_reads r ON r.message_id = m.id AND r.reg_no = $1
+       WHERE m.is_active = TRUE
+         AND (m.starts_at IS NULL OR m.starts_at <= NOW())
+         AND (m.expires_at IS NULL OR m.expires_at >= NOW())
+         AND (
+           m.channel_type = 'global'
+           OR (m.channel_type = 'student' AND m.target_reg_no = $1)
+           OR (m.channel_type = 'class' AND m.classroom IS NOT NULL AND m.classroom = COALESCE($2, m.classroom))
+           OR (m.channel_type = 'subject' AND m.subject_id IS NOT NULL AND m.subject_id = COALESCE($3, m.subject_id))
+         )
+       ORDER BY m.priority DESC, m.created_at DESC`,
+      params
+    );
+    res.json({ announcements: result.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/student/messages/:id/read', requireAuth('student'), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const regNo = normalizeRegNo(req.auth.regNo);
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'Invalid message id' });
+
+    await pool.query(
+      `INSERT INTO student_message_reads (message_id, reg_no, read_at)
+       VALUES ($1, $2, NOW())
+       ON CONFLICT (message_id, reg_no)
+       DO UPDATE SET read_at = EXCLUDED.read_at`,
+      [id, regNo]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/staff/messages/broadcast/:id/read-receipts', requireAuth('staff'), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'Invalid message id' });
+
+    const owner = await pool.query(
+      `SELECT id FROM broadcast_messages WHERE id = $1 AND created_by_staff_email = $2`,
+      [id, normalizeStaffEmail(req.auth.email)]
+    );
+    if (!owner.rows.length) return res.status(404).json({ error: 'Message not found' });
+
+    const receipts = await pool.query(
+      `SELECT reg_no, read_at
+       FROM student_message_reads
+       WHERE message_id = $1
+       ORDER BY read_at DESC`,
+      [id]
+    );
+    res.json({ receipts: receipts.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/staff/messages/emergency', requireAuth('staff'), async (req, res, next) => {
+  try {
+    const title = String(req.body?.title || '').trim() || 'Emergency Notice';
+    const message = String(req.body?.message || '').trim();
+    if (!message) return res.status(400).json({ error: 'Message is required' });
+
+    const result = await pool.query(
+      `INSERT INTO broadcast_messages (
+         created_by_staff_email, title, message, is_active, channel_type, priority
+       ) VALUES ($1, $2, $3, TRUE, 'global', 'emergency')
+       RETURNING *`,
+      [normalizeStaffEmail(req.auth.email), title, message]
+    );
+    res.status(201).json({ ok: true, banner: result.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/student/messages/emergency', requireAuth('student'), async (_req, res, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, title, message, created_at
+       FROM broadcast_messages
+       WHERE is_active = TRUE
+         AND priority = 'emergency'
+         AND (starts_at IS NULL OR starts_at <= NOW())
+         AND (expires_at IS NULL OR expires_at >= NOW())
+       ORDER BY created_at DESC`
+    );
+    res.json({ banners: result.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/student/qa/threads', requireAuth('student'), async (req, res, next) => {
+  try {
+    const subjectId = Number(req.body?.subjectId);
+    const staffEmail = normalizeStaffEmail(req.body?.staffEmail);
+    const title = String(req.body?.title || '').trim();
+    const message = String(req.body?.message || '').trim();
+    const regNo = normalizeRegNo(req.auth.regNo);
+
+    if (!Number.isFinite(subjectId) || subjectId <= 0 || !staffEmail || !title || !message) {
+      return res.status(400).json({ error: 'Missing required fields' });
+    }
+
+    const canTalk = await ensureStaffMappedToStudentForSubject(staffEmail, regNo, subjectId);
+    if (!canTalk) return res.status(403).json({ error: 'Forbidden' });
+
+    const thread = await pool.query(
+      `INSERT INTO qa_threads (subject_id, staff_email, reg_no, title, is_open)
+       VALUES ($1, $2, $3, $4, TRUE)
+       RETURNING *`,
+      [subjectId, staffEmail, regNo, title]
+    );
+
+    const threadId = thread.rows[0].id;
+    await pool.query(
+      `INSERT INTO qa_messages (thread_id, sender_role, sender_id, message)
+       VALUES ($1, 'student', $2, $3)`,
+      [threadId, regNo, message]
+    );
+
+    res.status(201).json({ ok: true, thread: thread.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/student/qa/threads', requireAuth('student'), async (req, res, next) => {
+  try {
+    const regNo = normalizeRegNo(req.auth.regNo);
+    const result = await pool.query(
+      `SELECT *
+       FROM qa_threads
+       WHERE reg_no = $1
+       ORDER BY updated_at DESC`,
+      [regNo]
+    );
+    res.json({ threads: result.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/student/qa/threads/:id/messages', requireAuth('student'), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const regNo = normalizeRegNo(req.auth.regNo);
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'Invalid thread id' });
+
+    const thread = await pool.query('SELECT id FROM qa_threads WHERE id = $1 AND reg_no = $2', [id, regNo]);
+    if (!thread.rows.length) return res.status(404).json({ error: 'Thread not found' });
+
+    const messages = await pool.query(
+      `SELECT id, sender_role, sender_id, message, created_at
+       FROM qa_messages
+       WHERE thread_id = $1
+       ORDER BY created_at ASC`,
+      [id]
+    );
+    res.json({ messages: messages.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/staff/qa/threads', requireAuth('staff'), async (req, res, next) => {
+  try {
+    const staffEmail = normalizeStaffEmail(req.auth.email);
+    const subjectId = req.query?.subjectId ? Number(req.query.subjectId) : null;
+    const params = [staffEmail];
+    const where = ['staff_email = $1'];
+    if (Number.isFinite(subjectId) && subjectId > 0) {
+      params.push(subjectId);
+      where.push(`subject_id = $${params.length}`);
+    }
+    const result = await pool.query(
+      `SELECT *
+       FROM qa_threads
+       WHERE ${where.join(' AND ')}
+       ORDER BY updated_at DESC`,
+      params
+    );
+    res.json({ threads: result.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/staff/qa/threads/:id/messages', requireAuth('staff'), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const staffEmail = normalizeStaffEmail(req.auth.email);
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'Invalid thread id' });
+
+    const thread = await pool.query('SELECT id FROM qa_threads WHERE id = $1 AND staff_email = $2', [id, staffEmail]);
+    if (!thread.rows.length) return res.status(404).json({ error: 'Thread not found' });
+
+    const messages = await pool.query(
+      `SELECT id, sender_role, sender_id, message, created_at
+       FROM qa_messages
+       WHERE thread_id = $1
+       ORDER BY created_at ASC`,
+      [id]
+    );
+    res.json({ messages: messages.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/staff/qa/threads/:id/reply', requireAuth('staff'), async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    const message = String(req.body?.message || '').trim();
+    const closeThread = Boolean(req.body?.closeThread);
+    const staffEmail = normalizeStaffEmail(req.auth.email);
+    if (!Number.isFinite(id) || id <= 0 || !message) {
+      return res.status(400).json({ error: 'Invalid request' });
+    }
+
+    const threadRes = await pool.query('SELECT * FROM qa_threads WHERE id = $1 AND staff_email = $2', [id, staffEmail]);
+    if (!threadRes.rows.length) return res.status(404).json({ error: 'Thread not found' });
+
+    await pool.query(
+      `INSERT INTO qa_messages (thread_id, sender_role, sender_id, message)
+       VALUES ($1, 'staff', $2, $3)`,
+      [id, staffEmail, message]
+    );
+
+    if (closeThread) {
+      await pool.query('UPDATE qa_threads SET is_open = FALSE, updated_at = NOW() WHERE id = $1', [id]);
+    } else {
+      await pool.query('UPDATE qa_threads SET updated_at = NOW() WHERE id = $1', [id]);
+    }
+
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/superadmin/active-users/live', requireSuperAdmin, async (_req, res) => {
+  const live = getLiveSessionsSnapshot();
+  const summary = {
+    total: live.length,
+    students: live.filter((s) => s.role === 'student').length,
+    staff: live.filter((s) => s.role === 'staff').length,
+  };
+  res.json({ summary, sessions: live });
+});
+
+app.post('/superadmin/active-users/force-logout', requireSuperAdmin, async (req, res) => {
+  const token = String(req.body?.token || '').trim();
+  const userIdentifier = String(req.body?.userIdentifier || '').trim().toLowerCase();
+  if (!token && !userIdentifier) {
+    return res.status(400).json({ error: 'token or userIdentifier is required' });
+  }
+
+  let revoked = 0;
+  for (const [sessionToken, session] of sessions.entries()) {
+    if (token && sessionToken === token) {
+      sessions.delete(sessionToken);
+      revoked += 1;
+      continue;
+    }
+    if (userIdentifier) {
+      const regNo = String(session?.regNo || '').toLowerCase();
+      const email = String(session?.email || '').toLowerCase();
+      if (regNo === userIdentifier || email === userIdentifier) {
+        sessions.delete(sessionToken);
+        revoked += 1;
+      }
+    }
+  }
+
+  res.json({ ok: true, revoked });
+});
+
+app.post('/superadmin/database/backup', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const payload = { generatedAt: new Date().toISOString(), tables: {} };
+    for (const tableName of backupTables) {
+      payload.tables[tableName] = await readTableForBackup(tableName);
+    }
+
+    const json = JSON.stringify(payload);
+    const buffer = Buffer.from(json, 'utf8');
+    const checksum = crypto.createHash('sha256').update(buffer).digest('hex');
+    const fileName = `chemistry-backup-${Date.now()}.json`;
+
+    const result = await pool.query(
+      `INSERT INTO system_backups (file_name, file_size, checksum, storage_path, created_by, file_data)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       RETURNING id, file_name, file_size, checksum, created_at`,
+      [fileName, buffer.length, checksum, 'database', normalizeStaffEmail(req.auth.email), buffer]
+    );
+
+    res.json({ ok: true, backup: result.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/superadmin/database/backup/:id/download', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'Invalid backup id' });
+
+    const result = await pool.query(
+      `SELECT file_name, file_data
+       FROM system_backups
+       WHERE id = $1`,
+      [id]
+    );
+    if (!result.rows.length) return res.status(404).json({ error: 'Backup not found' });
+
+    const row = result.rows[0];
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="${path.basename(String(row.file_name || 'backup.json'))}"`);
+    return res.send(row.file_data);
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/superadmin/database/restore', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const backupId = Number(req.body?.backupId);
+    const confirmation = String(req.body?.confirmation || '').trim().toUpperCase();
+    if (!Number.isFinite(backupId) || backupId <= 0) {
+      return res.status(400).json({ error: 'backupId is required' });
+    }
+    if (confirmation !== 'RESTORE DATABASE') {
+      return res.status(400).json({ error: 'Invalid confirmation phrase' });
+    }
+
+    const backupResult = await pool.query('SELECT file_data FROM system_backups WHERE id = $1', [backupId]);
+    if (!backupResult.rows.length) {
+      return res.status(404).json({ error: 'Backup not found' });
+    }
+
+    const payload = JSON.parse(Buffer.from(backupResult.rows[0].file_data).toString('utf8'));
+    const tables = payload?.tables || {};
+
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('TRUNCATE TABLE qa_messages, qa_threads, student_message_reads, student_staff_subject_assignments, student_subject_assignments, staff_subject_assignments, submissions, official_materials, broadcast_messages, student_storage_quotas, student_auth, students, subjects RESTART IDENTITY CASCADE');
+      await restoreTableRows(client, 'subjects', tables.subjects || []);
+      await restoreTableRows(client, 'students', tables.students || []);
+      await restoreTableRows(client, 'student_auth', tables.student_auth || []);
+      await restoreTableRows(client, 'staff_subject_assignments', tables.staff_subject_assignments || []);
+      await restoreTableRows(client, 'student_subject_assignments', tables.student_subject_assignments || []);
+      await restoreTableRows(client, 'student_staff_subject_assignments', tables.student_staff_subject_assignments || []);
+      await restoreTableRows(client, 'broadcast_messages', tables.broadcast_messages || []);
+      await restoreTableRows(client, 'student_message_reads', tables.student_message_reads || []);
+      await restoreTableRows(client, 'qa_threads', tables.qa_threads || []);
+      await restoreTableRows(client, 'qa_messages', tables.qa_messages || []);
+      await restoreTableRows(client, 'submissions', tables.submissions || []);
+      await restoreTableRows(client, 'official_materials', tables.official_materials || []);
+      await restoreTableRows(client, 'student_storage_quotas', tables.student_storage_quotas || []);
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    res.json({ ok: true, restoredBackupId: backupId });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/superadmin/database/wipe', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const confirmation = String(req.body?.confirmation || '').trim().toUpperCase();
+    if (confirmation !== 'WIPE DATABASE') {
+      return res.status(400).json({ error: 'Invalid confirmation phrase' });
+    }
+
+    await pool.query('TRUNCATE TABLE qa_messages, qa_threads, student_message_reads, student_staff_subject_assignments, student_subject_assignments, staff_subject_assignments, submissions, official_materials, broadcast_messages, student_storage_quotas, student_auth, students, subjects RESTART IDENTITY CASCADE');
+    await ensureDefaultSubject();
+    await syncStudentsOnApiStartup();
+    await backfillMissingStudentAuth();
+    await enforceDefaultPasswordForFirstLoginAccounts();
+
+    res.json({ ok: true, message: 'Database wiped and baseline data restored' });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/superadmin/analytics/overview', requireSuperAdmin, async (_req, res, next) => {
+  try {
+    const [students, staff, subjects, submissions, pending, marks] = await Promise.all([
+      pool.query('SELECT COUNT(*)::int AS count FROM students'),
+      pool.query('SELECT COUNT(*)::int AS count FROM staff_accounts WHERE is_active = TRUE'),
+      pool.query('SELECT COUNT(*)::int AS count FROM subjects WHERE is_active = TRUE'),
+      pool.query('SELECT COUNT(*)::int AS count FROM submissions'),
+      pool.query(`SELECT COUNT(*)::int AS count FROM submissions WHERE status = 'pending'`),
+      pool.query('SELECT AVG(marks)::numeric(10,2) AS avg_mark FROM submissions WHERE marks IS NOT NULL'),
+    ]);
+
+    res.json({
+      students: students.rows[0].count,
+      activeStaff: staff.rows[0].count,
+      activeSubjects: subjects.rows[0].count,
+      submissions: submissions.rows[0].count,
+      pendingSubmissions: pending.rows[0].count,
+      averageMark: marks.rows[0].avg_mark === null ? null : Number(marks.rows[0].avg_mark),
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/superadmin/workload/staff-subject', requireSuperAdmin, async (_req, res, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT ssa.staff_email,
+              st.full_name AS staff_name,
+              ssa.subject_id,
+              sub.code AS subject_code,
+              sub.name AS subject_name,
+              COUNT(DISTINCT sssa.reg_no)::int AS assigned_students,
+              COUNT(DISTINCT su.id)::int AS submission_count
+       FROM staff_subject_assignments ssa
+       JOIN staff_accounts st ON st.email = ssa.staff_email
+       JOIN subjects sub ON sub.id = ssa.subject_id
+       LEFT JOIN student_staff_subject_assignments sssa
+              ON sssa.staff_email = ssa.staff_email
+             AND sssa.subject_id = ssa.subject_id
+             AND sssa.is_active = TRUE
+       LEFT JOIN submissions su
+              ON su.roll_number = sssa.reg_no
+             AND su.subject_id = ssa.subject_id
+       WHERE ssa.is_active = TRUE
+       GROUP BY ssa.staff_email, st.full_name, ssa.subject_id, sub.code, sub.name
+       ORDER BY sub.code ASC, ssa.staff_email ASC`
+    );
+    res.json({ workload: result.rows });
   } catch (err) {
     next(err);
   }
@@ -735,9 +2343,25 @@ app.post('/admin/students/import', requireSuperAdmin, excelUpload.single('file')
 
     const fallbackStream = String(req.body?.stream || '').trim();
     const fallbackSection = String(req.body?.section || '').trim().toUpperCase();
+    const dryRun = String(req.body?.dryRun || '').toLowerCase() === 'true';
     const rows = parseStudentsFromWorkbook(req.file.buffer);
     if (!rows.length) {
       return res.status(400).json({ error: 'No valid student rows found in file' });
+    }
+
+    if (dryRun) {
+      const preview = rows.slice(0, 20).map((row) => ({
+        regNo: row.regNo,
+        fullName: row.fullName,
+        stream: row.stream || fallbackStream || null,
+        section: row.section || fallbackSection || inferSectionFromRegNo(row.regNo) || null,
+      }));
+      return res.json({
+        ok: true,
+        dryRun: true,
+        total: rows.length,
+        preview,
+      });
     }
 
     let inserted = 0;
@@ -819,6 +2443,25 @@ app.get('/students/count', requireAuth(['staff', 'student']), async (_req, res) 
   res.json({ count: result.rows[0].count });
 });
 
+app.get('/student/storage/quota', requireAuth('student'), async (req, res, next) => {
+  try {
+    const regNo = normalizeRegNo(req.auth.regNo);
+    const quota = await upsertStudentQuota(regNo);
+    const usagePercent = quota.quotaBytes > 0
+      ? Math.min(100, Math.round((quota.usedBytes / quota.quotaBytes) * 100))
+      : 0;
+    res.json({
+      regNo,
+      usedBytes: quota.usedBytes,
+      remainingBytes: quota.remainingBytes,
+      totalBytes: quota.quotaBytes,
+      usagePercent,
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
 function normalizeSubmissionRow(row) {
   let images = [];
   try {
@@ -840,6 +2483,7 @@ function normalizeSubmissionRow(row) {
     id: row.id,
     studentName: row.student_name,
     rollNumber: row.roll_number,
+    subjectId: row.subject_id === null || row.subject_id === undefined ? null : Number(row.subject_id),
     subject: row.subject || '',
     classroom: row.classroom || '',
     testTitle: row.test_title || '',
@@ -859,6 +2503,7 @@ function normalizeSubmissionRow(row) {
 app.get('/submissions', requireAuth(['staff', 'student']), async (req, res, next) => {
   try {
     const rollNumberQuery = String(req.query.rollNumber || '').trim();
+    const subjectIdQuery = req.query.subjectId ? Number(req.query.subjectId) : null;
     const includeArchived = String(req.query.includeArchived || 'true').toLowerCase() === 'true';
     const status = String(req.query.status || '').trim();
 
@@ -869,14 +2514,58 @@ app.get('/submissions', requireAuth(['staff', 'student']), async (req, res, next
       params.push(req.auth.regNo);
       where.push(`roll_number = $${params.length}`);
       where.push('archived = FALSE');
+
+      if (Number.isFinite(subjectIdQuery) && subjectIdQuery > 0) {
+        const canAccessSubject = await ensureStudentAssignedToSubject(req.auth.regNo, subjectIdQuery);
+        if (!canAccessSubject) {
+          return res.status(403).json({ error: 'Forbidden' });
+        }
+      }
     } else {
+      const staffEmail = normalizeStaffEmail(req.auth.email);
       if (rollNumberQuery) {
         params.push(rollNumberQuery);
         where.push(`roll_number = $${params.length}`);
       }
+
+      if (Number.isFinite(subjectIdQuery) && subjectIdQuery > 0) {
+        const canAccessSubject = await ensureStaffAssignedToSubject(staffEmail, subjectIdQuery);
+        if (!canAccessSubject) {
+          return res.status(403).json({ error: 'Forbidden' });
+        }
+      }
+
+      params.push(staffEmail);
+      where.push(
+        `EXISTS (
+           SELECT 1
+           FROM staff_subject_assignments ssa
+           WHERE ssa.staff_email = $${params.length}
+             AND ssa.subject_id = submissions.subject_id
+             AND ssa.is_active = TRUE
+         )`
+      );
+
+      params.push(staffEmail);
+      where.push(
+        `EXISTS (
+           SELECT 1
+           FROM student_staff_subject_assignments sssa
+           WHERE sssa.staff_email = $${params.length}
+             AND sssa.reg_no = submissions.roll_number
+             AND sssa.subject_id = submissions.subject_id
+             AND sssa.is_active = TRUE
+         )`
+      );
+
       if (!includeArchived) {
         where.push('archived = FALSE');
       }
+    }
+
+    if (Number.isFinite(subjectIdQuery) && subjectIdQuery > 0) {
+      params.push(subjectIdQuery);
+      where.push(`subject_id = $${params.length}`);
     }
 
     if (status) {
@@ -903,6 +2592,90 @@ app.get('/submissions', requireAuth(['staff', 'student']), async (req, res, next
   }
 });
 
+app.get('/staff/submissions', requireAuth('staff'), async (req, res, next) => {
+  try {
+    const subjectId = req.query?.subjectId ? Number(req.query.subjectId) : null;
+    const status = String(req.query.status || '').trim();
+    const staffEmail = normalizeStaffEmail(req.auth.email);
+
+    const params = [staffEmail, staffEmail];
+    const where = [
+      `EXISTS (
+         SELECT 1
+         FROM staff_subject_assignments ssa
+         WHERE ssa.staff_email = $1
+           AND ssa.subject_id = submissions.subject_id
+           AND ssa.is_active = TRUE
+       )`,
+      `EXISTS (
+         SELECT 1
+         FROM student_staff_subject_assignments sssa
+         WHERE sssa.staff_email = $2
+           AND sssa.reg_no = submissions.roll_number
+           AND sssa.subject_id = submissions.subject_id
+           AND sssa.is_active = TRUE
+       )`,
+    ];
+
+    if (Number.isFinite(subjectId) && subjectId > 0) {
+      const canAccessSubject = await ensureStaffAssignedToSubject(staffEmail, subjectId);
+      if (!canAccessSubject) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+      params.push(subjectId);
+      where.push(`subject_id = $${params.length}`);
+    }
+
+    if (status) {
+      params.push(status);
+      where.push(`status = $${params.length}`);
+    }
+
+    const result = await pool.query(
+      `SELECT *
+       FROM submissions
+       WHERE ${where.join(' AND ')}
+       ORDER BY submitted_at DESC`,
+      params
+    );
+    res.json({ submissions: result.rows.map(normalizeSubmissionRow) });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/student/tests', requireAuth('student'), async (req, res, next) => {
+  try {
+    const regNo = normalizeRegNo(req.auth.regNo);
+    const subjectId = req.query?.subjectId ? Number(req.query.subjectId) : null;
+
+    if (Number.isFinite(subjectId) && subjectId > 0) {
+      const canAccessSubject = await ensureStudentAssignedToSubject(regNo, subjectId);
+      if (!canAccessSubject) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    }
+
+    const params = [regNo];
+    const where = ['roll_number = $1'];
+    if (Number.isFinite(subjectId) && subjectId > 0) {
+      params.push(subjectId);
+      where.push(`subject_id = $${params.length}`);
+    }
+
+    const result = await pool.query(
+      `SELECT *
+       FROM submissions
+       WHERE ${where.join(' AND ')}
+       ORDER BY submitted_at DESC`,
+      params
+    );
+    res.json({ tests: result.rows.map(normalizeSubmissionRow) });
+  } catch (err) {
+    next(err);
+  }
+});
+
 app.get('/submissions/:id', requireAuth(['staff', 'student']), async (req, res, next) => {
   try {
     const result = await pool.query('SELECT * FROM submissions WHERE id = $1', [req.params.id]);
@@ -913,6 +2686,19 @@ app.get('/submissions/:id', requireAuth(['staff', 'student']), async (req, res, 
     const submission = normalizeSubmissionRow(result.rows[0]);
     if (req.auth.role === 'student' && submission.rollNumber !== req.auth.regNo) {
       return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    if (req.auth.role === 'staff') {
+      const staffEmail = normalizeStaffEmail(req.auth.email);
+      const subjectId = Number.isFinite(submission.subjectId) && submission.subjectId > 0
+        ? submission.subjectId
+        : await getDefaultSubjectId();
+
+      const canAccessSubject = await ensureStaffAssignedToSubject(staffEmail, subjectId);
+      const canAccessStudent = await ensureStaffMappedToStudentForSubject(staffEmail, submission.rollNumber, subjectId);
+      if (!canAccessSubject || !canAccessStudent) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
     }
 
     res.json({ submission });
@@ -928,6 +2714,10 @@ app.post('/submissions', requireAuth('student'), async (req, res, next) => {
     const studentName = String(body.studentName || '').trim();
     const rollNumber = String(body.rollNumber || '').trim();
     const testTitle = String(body.testTitle || '').trim();
+    const requestedSubjectId = Number(body.subjectId);
+    const subjectId = Number.isFinite(requestedSubjectId) && requestedSubjectId > 0
+      ? requestedSubjectId
+      : await getDefaultSubjectId();
 
     console.log('[SUBMISSION-CREATE] Received submission:', { id, studentName, rollNumber, testTitle });
     console.log('[SUBMISSION-CREATE] Images count:', Array.isArray(body.images) ? body.images.length : 'not-array');
@@ -940,6 +2730,11 @@ app.post('/submissions', requireAuth('student'), async (req, res, next) => {
     if (rollNumber !== req.auth.regNo) {
       console.error('[SUBMISSION-CREATE] Forbidden: role mismatch');
       return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const canSubmit = await ensureStudentAssignedToSubject(req.auth.regNo, subjectId);
+    if (!canSubmit) {
+      return res.status(403).json({ error: 'Student is not assigned to this subject' });
     }
 
     const imagesJson = JSON.stringify(normalizeImagesForStorage(body.images));
@@ -962,17 +2757,18 @@ app.post('/submissions', requireAuth('student'), async (req, res, next) => {
       Boolean(body.archived),
       body.submittedAt ? new Date(body.submittedAt) : new Date(),
       body.gradedAt ? new Date(body.gradedAt) : null,
+      subjectId,
     ];
 
     const result = await pool.query(
       `INSERT INTO submissions (
         id, student_name, roll_number, subject, classroom, test_title, notes,
         images, file_count, status, marks, total_marks, feedback, archived,
-        submitted_at, graded_at
+        submitted_at, graded_at, subject_id
       ) VALUES (
         $1, $2, $3, $4, $5, $6, $7,
         $8::jsonb, $9, $10, $11, $12, $13, $14,
-        $15, $16
+        $15, $16, $17
       ) RETURNING *`,
       submissionValues
     );
@@ -1188,6 +2984,7 @@ app.post('/upload', requireAuth('student'), upload.array('files', 20), async (re
     url: '',
     size: file.size,
     mimeType: file.mimetype,
+    ext: path.extname(file.originalname || '').toLowerCase(),
     data: file.buffer,
   }));
 
@@ -1200,21 +2997,47 @@ app.post('/upload', requireAuth('student'), upload.array('files', 20), async (re
     return res.status(400).json({ error: 'No files uploaded' });
   }
 
+  for (const file of files) {
+    const mimeOk = allowedStudentUploadMimeTypes.has(String(file.mimeType || '').toLowerCase());
+    const extOk = allowedStudentUploadExtensions.has(String(file.ext || '').toLowerCase());
+    if (!mimeOk || !extOk) {
+      return res.status(400).json({
+        error: `File type not allowed: ${file.originalName}`,
+      });
+    }
+  }
+
   try {
+    const regNo = normalizeRegNo(req.auth.regNo);
+    const currentQuota = await upsertStudentQuota(regNo);
+    const requestedBytes = files.reduce((sum, file) => sum + Number(file.size || 0), 0);
+    if ((currentQuota.usedBytes + requestedBytes) > currentQuota.quotaBytes) {
+      return res.status(409).json({
+        error: 'Student storage quota exceeded',
+        quota: {
+          usedBytes: currentQuota.usedBytes,
+          requestedBytes,
+          remainingBytes: currentQuota.remainingBytes,
+          totalBytes: currentQuota.quotaBytes,
+        },
+      });
+    }
+
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
       for (const file of files) {
         await client.query(
-          `INSERT INTO uploads (stored_name, original_name, mime_type, size_bytes, file_url, file_data)
-           VALUES ($1, $2, $3, $4, $5, $6)
+          `INSERT INTO uploads (stored_name, original_name, mime_type, size_bytes, file_url, file_data, owner_reg_no)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)
            ON CONFLICT (stored_name)
            DO UPDATE SET original_name = EXCLUDED.original_name,
                          mime_type = EXCLUDED.mime_type,
                          size_bytes = EXCLUDED.size_bytes,
                          file_url = EXCLUDED.file_url,
-                         file_data = EXCLUDED.file_data`,
-          [file.storedName, file.originalName, file.mimeType, file.size, file.url, file.data]
+                         file_data = EXCLUDED.file_data,
+                         owner_reg_no = EXCLUDED.owner_reg_no`,
+          [file.storedName, file.originalName, file.mimeType, file.size, file.url, file.data, regNo]
         );
       }
       await client.query('COMMIT');
@@ -1227,6 +3050,8 @@ app.post('/upload', requireAuth('student'), upload.array('files', 20), async (re
 
     cleanupUploadDiskCopies(files.map((file) => file.storedName));
 
+    const updatedQuota = await upsertStudentQuota(regNo);
+
     console.log('[UPLOAD] SUCCESS: Saved', files.length, 'files to database');
     const responseFiles = files.map((file) => ({
       name: file.storedName,
@@ -1235,7 +3060,14 @@ app.post('/upload', requireAuth('student'), upload.array('files', 20), async (re
       size: file.size,
       mimeType: file.mimeType,
     }));
-    res.json({ files: responseFiles });
+    res.json({
+      files: responseFiles,
+      quota: {
+        usedBytes: updatedQuota.usedBytes,
+        remainingBytes: updatedQuota.remainingBytes,
+        totalBytes: updatedQuota.quotaBytes,
+      },
+    });
   } catch (err) {
     console.error('[UPLOAD] DATABASE ERROR:', err.message);
     next(err);
@@ -1291,6 +3123,84 @@ async function ensureSchema() {
   `);
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS role_policies (
+      staff_email TEXT PRIMARY KEY REFERENCES staff_accounts(email) ON DELETE CASCADE,
+      permissions_json JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS audit_logs (
+      id BIGSERIAL PRIMARY KEY,
+      actor TEXT NOT NULL,
+      action TEXT NOT NULL,
+      target_type TEXT,
+      target_id TEXT,
+      before_json JSONB,
+      after_json JSONB,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_audit_logs_actor ON audit_logs(actor)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action)');
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS subjects (
+      id BIGSERIAL PRIMARY KEY,
+      code TEXT NOT NULL UNIQUE,
+      name TEXT NOT NULL,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS staff_subject_assignments (
+      id BIGSERIAL PRIMARY KEY,
+      staff_email TEXT NOT NULL REFERENCES staff_accounts(email) ON DELETE CASCADE,
+      subject_id BIGINT NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(staff_email, subject_id)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS student_subject_assignments (
+      id BIGSERIAL PRIMARY KEY,
+      reg_no TEXT NOT NULL REFERENCES students(reg_no) ON DELETE CASCADE,
+      subject_id BIGINT NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(reg_no, subject_id)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS student_staff_subject_assignments (
+      id BIGSERIAL PRIMARY KEY,
+      reg_no TEXT NOT NULL REFERENCES students(reg_no) ON DELETE CASCADE,
+      staff_email TEXT NOT NULL REFERENCES staff_accounts(email) ON DELETE CASCADE,
+      subject_id BIGINT NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(reg_no, staff_email, subject_id)
+    )
+  `);
+
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_staff_subject_assignments_subject ON staff_subject_assignments(subject_id)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_student_subject_assignments_subject ON student_subject_assignments(subject_id)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_student_staff_subject_assignments_subject ON student_staff_subject_assignments(subject_id)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_student_staff_subject_assignments_staff ON student_staff_subject_assignments(staff_email)');
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS uploads (
       id BIGSERIAL PRIMARY KEY,
       stored_name TEXT NOT NULL UNIQUE,
@@ -1299,17 +3209,21 @@ async function ensureSchema() {
       size_bytes BIGINT,
       file_url TEXT NOT NULL,
       file_data BYTEA,
+      owner_reg_no TEXT REFERENCES students(reg_no) ON DELETE SET NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
 
   await pool.query('ALTER TABLE uploads ADD COLUMN IF NOT EXISTS file_data BYTEA');
+  await pool.query('ALTER TABLE uploads ADD COLUMN IF NOT EXISTS owner_reg_no TEXT');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_uploads_owner_reg_no ON uploads(owner_reg_no)');
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS submissions (
       id TEXT PRIMARY KEY,
       student_name TEXT NOT NULL,
       roll_number TEXT NOT NULL,
+      subject_id BIGINT REFERENCES subjects(id) ON DELETE SET NULL,
       subject TEXT,
       classroom TEXT,
       test_title TEXT NOT NULL,
@@ -1325,6 +3239,108 @@ async function ensureSchema() {
       graded_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await pool.query('ALTER TABLE submissions ADD COLUMN IF NOT EXISTS subject_id BIGINT');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_submissions_subject_id ON submissions(subject_id)');
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS student_storage_quotas (
+      reg_no TEXT PRIMARY KEY REFERENCES students(reg_no) ON DELETE CASCADE,
+      quota_bytes BIGINT NOT NULL DEFAULT 524288000,
+      used_bytes BIGINT NOT NULL DEFAULT 0,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS official_materials (
+      id BIGSERIAL PRIMARY KEY,
+      subject_id BIGINT NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+      staff_email TEXT NOT NULL REFERENCES staff_accounts(email) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      description TEXT,
+      file_name TEXT NOT NULL,
+      mime_type TEXT,
+      size_bytes BIGINT,
+      file_data BYTEA,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS broadcast_messages (
+      id BIGSERIAL PRIMARY KEY,
+      created_by_staff_email TEXT NOT NULL REFERENCES staff_accounts(email) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      message TEXT NOT NULL,
+      is_active BOOLEAN NOT NULL DEFAULT TRUE,
+      starts_at TIMESTAMPTZ,
+      expires_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await pool.query("ALTER TABLE broadcast_messages ADD COLUMN IF NOT EXISTS channel_type TEXT NOT NULL DEFAULT 'global'");
+  await pool.query('ALTER TABLE broadcast_messages ADD COLUMN IF NOT EXISTS subject_id BIGINT');
+  await pool.query('ALTER TABLE broadcast_messages ADD COLUMN IF NOT EXISTS classroom TEXT');
+  await pool.query('ALTER TABLE broadcast_messages ADD COLUMN IF NOT EXISTS target_reg_no TEXT');
+  await pool.query("ALTER TABLE broadcast_messages ADD COLUMN IF NOT EXISTS priority TEXT NOT NULL DEFAULT 'normal'");
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_broadcast_messages_channel_type ON broadcast_messages(channel_type)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_broadcast_messages_target_reg_no ON broadcast_messages(target_reg_no)');
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS student_message_reads (
+      message_id BIGINT NOT NULL REFERENCES broadcast_messages(id) ON DELETE CASCADE,
+      reg_no TEXT NOT NULL REFERENCES students(reg_no) ON DELETE CASCADE,
+      read_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (message_id, reg_no)
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS qa_threads (
+      id BIGSERIAL PRIMARY KEY,
+      subject_id BIGINT NOT NULL REFERENCES subjects(id) ON DELETE CASCADE,
+      staff_email TEXT NOT NULL REFERENCES staff_accounts(email) ON DELETE CASCADE,
+      reg_no TEXT NOT NULL REFERENCES students(reg_no) ON DELETE CASCADE,
+      title TEXT NOT NULL,
+      is_open BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS qa_messages (
+      id BIGSERIAL PRIMARY KEY,
+      thread_id BIGINT NOT NULL REFERENCES qa_threads(id) ON DELETE CASCADE,
+      sender_role TEXT NOT NULL,
+      sender_id TEXT NOT NULL,
+      message TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_qa_threads_staff_email ON qa_threads(staff_email)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_qa_threads_reg_no ON qa_threads(reg_no)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_qa_messages_thread_id ON qa_messages(thread_id)');
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS system_backups (
+      id BIGSERIAL PRIMARY KEY,
+      file_name TEXT NOT NULL,
+      file_size BIGINT,
+      checksum TEXT,
+      storage_path TEXT,
+      created_by TEXT,
+      file_data BYTEA,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      restore_tested_at TIMESTAMPTZ
     )
   `);
 
@@ -1407,6 +3423,60 @@ async function upsertDefaultSuperAdminAccount() {
   console.log(`Upserted default super admin account: ${superAdminDefaultEmail}`);
 }
 
+async function ensureDefaultSubject() {
+  await pool.query(
+    `INSERT INTO subjects (code, name, is_active)
+     VALUES ('CHEMISTRY', 'Chemistry', TRUE)
+     ON CONFLICT (code)
+     DO UPDATE SET name = EXCLUDED.name,
+                   is_active = TRUE,
+                   updated_at = NOW()`
+  );
+}
+
+async function backfillSubmissionSubjectId() {
+  const defaultSubjectId = await getDefaultSubjectId();
+  await pool.query(
+    `UPDATE submissions
+     SET subject_id = $1
+     WHERE subject_id IS NULL`,
+    [defaultSubjectId]
+  );
+}
+
+async function ensureBaselineAssignments() {
+  const defaultSubjectId = await getDefaultSubjectId();
+
+  await pool.query(
+    `INSERT INTO student_subject_assignments (reg_no, subject_id, is_active)
+     SELECT s.reg_no, $1, TRUE
+     FROM students s
+     ON CONFLICT (reg_no, subject_id)
+     DO UPDATE SET is_active = TRUE, updated_at = NOW()`,
+    [defaultSubjectId]
+  );
+
+  await pool.query(
+    `INSERT INTO staff_subject_assignments (staff_email, subject_id, is_active)
+     SELECT st.email, $1, TRUE
+     FROM staff_accounts st
+     WHERE st.is_active = TRUE
+     ON CONFLICT (staff_email, subject_id)
+     DO UPDATE SET is_active = TRUE, updated_at = NOW()`,
+    [defaultSubjectId]
+  );
+
+  await pool.query(
+    `INSERT INTO student_staff_subject_assignments (reg_no, staff_email, subject_id, is_active)
+     SELECT s.reg_no, st.email, $1, TRUE
+     FROM students s
+     JOIN staff_accounts st ON st.is_active = TRUE
+     ON CONFLICT (reg_no, staff_email, subject_id)
+     DO UPDATE SET is_active = TRUE, updated_at = NOW()`,
+    [defaultSubjectId]
+  );
+}
+
 async function seedStudentsIfEmpty() {
   const countResult = await pool.query('SELECT COUNT(*)::int AS count FROM students');
   if (countResult.rows[0].count > 0) {
@@ -1468,6 +3538,28 @@ async function backfillStudentSectionFromRegNo() {
   );
 }
 
+async function syncAllStudentQuotas() {
+  await pool.query(
+    `INSERT INTO student_storage_quotas (reg_no, quota_bytes, used_bytes, updated_at)
+     SELECT s.reg_no,
+            $1,
+            COALESCE(u.used_bytes, 0),
+            NOW()
+     FROM students s
+     LEFT JOIN (
+       SELECT owner_reg_no AS reg_no, COALESCE(SUM(size_bytes), 0)::bigint AS used_bytes
+       FROM uploads
+       WHERE owner_reg_no IS NOT NULL
+       GROUP BY owner_reg_no
+     ) u ON u.reg_no = s.reg_no
+     ON CONFLICT (reg_no)
+     DO UPDATE SET quota_bytes = EXCLUDED.quota_bytes,
+                   used_bytes = EXCLUDED.used_bytes,
+                   updated_at = NOW()`,
+    [Math.max(studentQuotaBytesDefault, 1)]
+  );
+}
+
 app.post('/students/resync', requireAuth('staff'), async (req, res, next) => {
   try {
     if (resyncToken) {
@@ -1498,12 +3590,16 @@ app.use((err, _req, res, _next) => {
 
 async function bootstrap() {
   await ensureSchema();
+  await ensureDefaultSubject();
   await syncStudentsOnApiStartup();
   await backfillStudentSectionFromRegNo();
   await backfillMissingStudentAuth();
   await enforceDefaultPasswordForFirstLoginAccounts();
   await upsertDefaultStaffAccount();
   await upsertDefaultSuperAdminAccount();
+  await backfillSubmissionSubjectId();
+  await ensureBaselineAssignments();
+  await syncAllStudentQuotas();
   dbReady = true;
 
   app.listen(port, '0.0.0.0', () => {

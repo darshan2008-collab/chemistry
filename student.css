@@ -938,6 +938,49 @@ body {
   flex-wrap: wrap;
 }
 
+.student-menu-bar {
+  margin-top: 12px;
+  margin-bottom: 14px;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.student-menu-btn {
+  border: 1px solid rgba(108, 99, 255, 0.3);
+  background: rgba(108, 99, 255, 0.08);
+  color: var(--text-muted);
+  border-radius: 999px;
+  padding: 8px 14px;
+  font-size: 0.8rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: var(--transition);
+}
+
+.student-menu-btn:hover {
+  color: var(--text);
+  background: rgba(108, 99, 255, 0.16);
+}
+
+.student-menu-btn.active {
+  color: #fff;
+  border-color: rgba(0, 212, 170, 0.45);
+  background: linear-gradient(90deg, rgba(0, 212, 170, 0.35), rgba(108, 99, 255, 0.35));
+  box-shadow: 0 6px 18px rgba(108, 99, 255, 0.25);
+}
+
+.student-menu-section {
+  border: 1px solid var(--glass-border);
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 14px;
+  padding: 14px;
+}
+
+.student-menu-section.active {
+  animation: fadeUp 0.25s ease both;
+}
+
 .result-edit-btn {
   border: 1px solid rgba(108, 99, 255, 0.4);
   color: var(--primary-light);
@@ -1258,6 +1301,15 @@ body {
 
   .modal {
     padding: 36px 20px;
+  }
+
+  .student-menu-bar {
+    display: grid;
+    grid-template-columns: 1fr;
+  }
+
+  .student-menu-btn {
+    text-align: left;
   }
 }
 

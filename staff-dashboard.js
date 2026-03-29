@@ -104,9 +104,245 @@ document.addEventListener('DOMContentLoaded', async () => {
   initLightbox();
   initClearData();
   initAutoRefresh();
+  initStaffCommsPanel();
   await refreshSubmissions();
   renderAll();
 });
+
+async function staffApiJson(url, options = {}) {
+  const headers = {
+    ...getStaffAuthHeaders(),
+    ...(options.headers || {}),
+  };
+  const res = await fetch(url, { ...options, headers });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(payload?.error || `Request failed (${res.status})`);
+  return payload;
+}
+
+function initStaffCommsPanel() {
+  const dashboardTab = document.getElementById('tabDashboard');
+  if (!dashboardTab) return;
+
+  const card = document.createElement('section');
+  card.className = 'section-panel';
+  card.style.marginTop = '20px';
+  card.innerHTML = `
+    <div class="section-header" style="margin-bottom:12px;">
+      <h2 style="margin:0;">Communication & Q&A</h2>
+      <button class="clear-btn" id="staffCommsRefreshBtn" type="button">Refresh</button>
+    </div>
+    <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));">
+      <form id="staffAnnouncementForm" class="record-card" style="padding:12px;display:grid;gap:8px;">
+        <div style="font-weight:700;">Send Announcement</div>
+        <input id="staffAnnTitle" placeholder="Title" style="padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:inherit;" required />
+        <textarea id="staffAnnMessage" placeholder="Message" rows="3" style="padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:inherit;" required></textarea>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <input id="staffAnnSubjectId" placeholder="Subject ID (optional)" style="flex:1;min-width:120px;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:inherit;" />
+          <select id="staffAnnChannel" style="padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:inherit;">
+            <option value="global">Global</option>
+            <option value="subject">Subject</option>
+            <option value="class">Class</option>
+            <option value="student">Student</option>
+          </select>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <input id="staffAnnClassroom" placeholder="Classroom (if class channel)" style="flex:1;min-width:120px;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:inherit;" />
+          <input id="staffAnnTargetReg" placeholder="Reg No (if student channel)" style="flex:1;min-width:120px;padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:inherit;" />
+        </div>
+        <button class="t-grade-btn" type="submit">Publish</button>
+        <p id="staffAnnMsg" style="margin:0;font-size:0.78rem;color:var(--text-muted);"></p>
+      </form>
+
+      <form id="staffEmergencyForm" class="record-card" style="padding:12px;display:grid;gap:8px;">
+        <div style="font-weight:700;">Emergency Banner</div>
+        <input id="staffEmergencyTitle" value="Emergency Notice" placeholder="Title" style="padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:inherit;" />
+        <textarea id="staffEmergencyMessage" placeholder="Urgent message" rows="3" style="padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:inherit;" required></textarea>
+        <button class="t-grade-btn" type="submit">Send Emergency</button>
+        <p id="staffEmergencyMsg" style="margin:0;font-size:0.78rem;color:var(--text-muted);"></p>
+      </form>
+
+      <form id="staffReceiptForm" class="record-card" style="padding:12px;display:grid;gap:8px;">
+        <div style="font-weight:700;">Read Receipts</div>
+        <input id="staffReceiptMessageId" placeholder="Announcement ID" style="padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:inherit;" required />
+        <button class="t-grade-btn" type="submit">Fetch Receipts</button>
+        <div id="staffReceiptList" style="max-height:180px;overflow:auto;font-size:0.8rem;color:var(--text-muted);"></div>
+      </form>
+    </div>
+    <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));margin-top:12px;">
+      <div class="record-card" style="padding:12px;">
+        <div style="font-weight:700;margin-bottom:8px;">My Announcements</div>
+        <div id="staffAnnouncementsList" style="max-height:220px;overflow:auto;font-size:0.8rem;color:var(--text-muted);"></div>
+      </div>
+      <div class="record-card" style="padding:12px;">
+        <div style="font-weight:700;margin-bottom:8px;">Student Q&A Threads</div>
+        <div id="staffQaThreadsList" style="max-height:220px;overflow:auto;font-size:0.8rem;color:var(--text-muted);"></div>
+      </div>
+    </div>
+  `;
+  dashboardTab.appendChild(card);
+
+  const annMsg = card.querySelector('#staffAnnMsg');
+  const emergencyMsg = card.querySelector('#staffEmergencyMsg');
+
+  async function refreshAnnouncements() {
+    const list = card.querySelector('#staffAnnouncementsList');
+    list.innerHTML = 'Loading...';
+    try {
+      const payload = await staffApiJson('/api/staff/messages/broadcast');
+      const rows = payload.messages || [];
+      if (!rows.length) {
+        list.innerHTML = 'No announcements yet.';
+        return;
+      }
+      list.innerHTML = rows.slice(0, 20).map((m) =>
+        `<div style="padding:7px 0;border-bottom:1px solid rgba(255,255,255,0.08);">
+          <div style="font-weight:600;color:var(--text);">#${m.id} · ${esc(m.title || '')}</div>
+          <div>${esc(m.message || '')}</div>
+        </div>`
+      ).join('');
+    } catch (err) {
+      list.innerHTML = `<span style="color:#ffb8c7;">${esc(err.message || 'Failed')}</span>`;
+    }
+  }
+
+  async function refreshQaThreads() {
+    const list = card.querySelector('#staffQaThreadsList');
+    list.innerHTML = 'Loading...';
+    try {
+      const payload = await staffApiJson('/api/staff/qa/threads');
+      const rows = payload.threads || [];
+      if (!rows.length) {
+        list.innerHTML = 'No Q&A threads.';
+        return;
+      }
+      list.innerHTML = rows.slice(0, 30).map((t) =>
+        `<div style="padding:7px 0;border-bottom:1px solid rgba(255,255,255,0.08);">
+          <div style="font-weight:600;color:var(--text);">#${t.id} · ${esc(t.title || '')}</div>
+          <div>${esc(t.reg_no || '')} · subject ${esc(String(t.subject_id || ''))} · ${t.is_open ? 'Open' : 'Closed'}</div>
+          <button class="t-grade-btn" style="margin-top:6px;padding:4px 8px;font-size:0.72rem;" data-reply-thread="${t.id}">Reply</button>
+          <button class="t-grade-btn" style="margin-top:6px;padding:4px 8px;font-size:0.72rem;background:rgba(255,107,107,0.15);" data-close-thread="${t.id}">Reply + Close</button>
+        </div>`
+      ).join('');
+    } catch (err) {
+      list.innerHTML = `<span style="color:#ffb8c7;">${esc(err.message || 'Failed')}</span>`;
+    }
+  }
+
+  card.querySelector('#staffAnnouncementForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const title = String(card.querySelector('#staffAnnTitle').value || '').trim();
+    const message = String(card.querySelector('#staffAnnMessage').value || '').trim();
+    const channelType = String(card.querySelector('#staffAnnChannel').value || 'global').trim();
+    const subjectIdRaw = String(card.querySelector('#staffAnnSubjectId').value || '').trim();
+    const classroom = String(card.querySelector('#staffAnnClassroom').value || '').trim();
+    const targetRegNo = String(card.querySelector('#staffAnnTargetReg').value || '').trim();
+    if (!title || !message) {
+      annMsg.style.color = '#ffb8c7';
+      annMsg.textContent = 'Title and message are required';
+      return;
+    }
+    try {
+      const body = {
+        title,
+        message,
+        channelType,
+      };
+      if (subjectIdRaw) body.subjectId = Number(subjectIdRaw);
+      if (classroom) body.classroom = classroom;
+      if (targetRegNo) body.targetRegNo = targetRegNo;
+
+      const payload = await staffApiJson('/api/staff/messages/announcement', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      annMsg.style.color = '#9de9ff';
+      annMsg.textContent = `Announcement published (#${payload.announcement?.id || '-'})`;
+      showToast('Announcement sent', 'success');
+      await refreshAnnouncements();
+    } catch (err) {
+      annMsg.style.color = '#ffb8c7';
+      annMsg.textContent = err.message || 'Failed to publish';
+    }
+  });
+
+  card.querySelector('#staffEmergencyForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const title = String(card.querySelector('#staffEmergencyTitle').value || '').trim();
+    const message = String(card.querySelector('#staffEmergencyMessage').value || '').trim();
+    if (!message) {
+      emergencyMsg.style.color = '#ffb8c7';
+      emergencyMsg.textContent = 'Emergency message is required';
+      return;
+    }
+    try {
+      const payload = await staffApiJson('/api/staff/messages/emergency', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title, message }),
+      });
+      emergencyMsg.style.color = '#9de9ff';
+      emergencyMsg.textContent = `Emergency banner posted (#${payload.banner?.id || '-'})`;
+      showToast('Emergency banner sent', 'success');
+      await refreshAnnouncements();
+    } catch (err) {
+      emergencyMsg.style.color = '#ffb8c7';
+      emergencyMsg.textContent = err.message || 'Failed to send emergency banner';
+    }
+  });
+
+  card.querySelector('#staffReceiptForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const id = String(card.querySelector('#staffReceiptMessageId').value || '').trim();
+    const list = card.querySelector('#staffReceiptList');
+    if (!id) {
+      list.innerHTML = '<span style="color:#ffb8c7;">Enter an announcement ID.</span>';
+      return;
+    }
+    list.innerHTML = 'Loading...';
+    try {
+      const payload = await staffApiJson(`/api/staff/messages/broadcast/${encodeURIComponent(id)}/read-receipts`);
+      const rows = payload.receipts || [];
+      if (!rows.length) {
+        list.innerHTML = 'No reads yet.';
+        return;
+      }
+      list.innerHTML = rows.map((r) => `<div style="padding:6px 0;border-bottom:1px solid rgba(255,255,255,0.08);">${esc(r.reg_no)} · ${new Date(r.read_at).toLocaleString()}</div>`).join('');
+    } catch (err) {
+      list.innerHTML = `<span style="color:#ffb8c7;">${esc(err.message || 'Failed')}</span>`;
+    }
+  });
+
+  card.addEventListener('click', async (e) => {
+    const replyBtn = e.target.closest('[data-reply-thread]');
+    const closeBtn = e.target.closest('[data-close-thread]');
+    const target = replyBtn || closeBtn;
+    if (!target) return;
+    const threadId = String(target.getAttribute(replyBtn ? 'data-reply-thread' : 'data-close-thread') || '');
+    const message = prompt(`Reply to thread #${threadId}`);
+    if (!message || !message.trim()) return;
+    try {
+      await staffApiJson(`/api/staff/qa/threads/${encodeURIComponent(threadId)}/reply`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message: message.trim(), closeThread: Boolean(closeBtn) }),
+      });
+      showToast(closeBtn ? 'Reply sent and thread closed' : 'Reply sent', 'success');
+      await refreshQaThreads();
+    } catch (err) {
+      showToast(err.message || 'Reply failed', 'error');
+    }
+  });
+
+  card.querySelector('#staffCommsRefreshBtn').addEventListener('click', async () => {
+    await Promise.all([refreshAnnouncements(), refreshQaThreads()]);
+    showToast('Communication panel refreshed', 'info');
+  });
+
+  refreshAnnouncements();
+  refreshQaThreads();
+}
 
 // ── Auto-refresh (poll + cross-tab storage events) ────────────
 let _lastDataSignature = '';

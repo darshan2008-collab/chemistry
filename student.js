@@ -119,8 +119,241 @@ document.addEventListener('DOMContentLoaded', async () => {
   initDropZone();
   initForm();
   await loadMyResults();
+  initStudentCommsPanel();
   initLightbox();
 });
+
+async function studentApiJson(url, options = {}) {
+  const token = getStudentAuthTokenOrThrow();
+  const headers = {
+    Authorization: `Bearer ${token}`,
+    ...(options.headers || {}),
+  };
+  const res = await fetch(url, { ...options, headers });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(payload?.error || `Request failed (${res.status})`);
+  return payload;
+}
+
+function initStudentCommsPanel() {
+  const host = document.getElementById('resultsSection');
+  if (!host) return;
+
+  const panel = document.createElement('section');
+  panel.className = 'glass-card results-card';
+  panel.style.marginTop = '18px';
+  panel.innerHTML = `
+    <div class="card-header">
+      <div class="card-icon">📢</div>
+      <div>
+        <h2>Announcements & Q&A</h2>
+        <p>Use the menu below to switch sections</p>
+      </div>
+      <button type="button" class="nav-pass-btn" id="studentCommsRefreshBtn" style="margin-left:auto;">Refresh</button>
+    </div>
+    <div class="student-menu-bar" role="tablist" aria-label="Student communication menu">
+      <button type="button" class="student-menu-btn active" data-menu="emergency" aria-selected="true">Emergency</button>
+      <button type="button" class="student-menu-btn" data-menu="announcements" aria-selected="false">Announcements</button>
+      <button type="button" class="student-menu-btn" data-menu="qa" aria-selected="false">Q&A</button>
+    </div>
+
+    <div id="studentSectionEmergency" class="student-menu-section active" role="tabpanel">
+      <h3 style="font-size:1rem;margin:0 0 8px;">Emergency Alerts</h3>
+      <div id="studentEmergencyList" style="display:grid;gap:8px;"></div>
+    </div>
+
+    <div id="studentSectionAnnouncements" class="student-menu-section" role="tabpanel" hidden>
+      <h3 style="font-size:1rem;margin:0 0 8px;">Latest Announcements</h3>
+      <div id="studentAnnouncementsList" style="display:grid;gap:8px;max-height:320px;overflow:auto;"></div>
+    </div>
+
+    <div id="studentSectionQa" class="student-menu-section" role="tabpanel" hidden>
+      <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));">
+        <form id="studentQaCreateForm" style="display:grid;gap:8px;">
+          <h3 style="font-size:1rem;margin:0;">Start Q&A Thread</h3>
+          <input id="studentQaSubjectId" placeholder="Subject ID" style="padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.03);color:inherit;" required />
+          <input id="studentQaStaffEmail" placeholder="Staff email/username" style="padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.03);color:inherit;" required />
+          <input id="studentQaTitle" placeholder="Thread title" style="padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.03);color:inherit;" required />
+          <textarea id="studentQaMessage" rows="3" placeholder="Your question" style="padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.03);color:inherit;" required></textarea>
+          <button type="submit" class="submit-btn" style="padding:10px 14px;">Create Thread</button>
+          <p id="studentQaCreateMsg" style="margin:0;font-size:0.82rem;color:var(--text-muted);"></p>
+        </form>
+        <div>
+          <h3 style="font-size:1rem;margin:0 0 8px;">My Q&A Threads</h3>
+          <div id="studentQaThreadsList" style="display:grid;gap:8px;max-height:320px;overflow:auto;"></div>
+        </div>
+      </div>
+    </div>
+  `;
+  host.parentNode.insertBefore(panel, host.nextSibling);
+
+  const menuButtons = panel.querySelectorAll('.student-menu-btn');
+  const menuSections = {
+    emergency: panel.querySelector('#studentSectionEmergency'),
+    announcements: panel.querySelector('#studentSectionAnnouncements'),
+    qa: panel.querySelector('#studentSectionQa'),
+  };
+
+  function switchCommsMenu(key) {
+    menuButtons.forEach((btn) => {
+      const active = btn.dataset.menu === key;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-selected', active ? 'true' : 'false');
+    });
+
+    Object.entries(menuSections).forEach(([sectionKey, sectionEl]) => {
+      const active = sectionKey === key;
+      sectionEl.classList.toggle('active', active);
+      sectionEl.hidden = !active;
+    });
+  }
+
+  menuButtons.forEach((btn) => {
+    btn.addEventListener('click', () => switchCommsMenu(btn.dataset.menu));
+  });
+
+  async function refreshEmergency() {
+    const list = panel.querySelector('#studentEmergencyList');
+    list.innerHTML = 'Loading...';
+    try {
+      const payload = await studentApiJson('/api/student/messages/emergency');
+      const rows = payload.banners || [];
+      if (!rows.length) {
+        list.innerHTML = '<div class="empty-state"><p>No emergency alerts.</p></div>';
+        return;
+      }
+      list.innerHTML = rows.slice(0, 5).map((b) =>
+        `<div class="result-item" style="border-color:rgba(255,107,107,0.38);">
+          <div class="result-header"><div class="result-title">${escapeHtml(b.title || 'Emergency')}</div></div>
+          <div class="result-feedback" style="margin-top:6px;">${escapeHtml(b.message || '')}</div>
+        </div>`
+      ).join('');
+    } catch (err) {
+      list.innerHTML = `<div class="empty-state"><p style="color:#ffb8c7;">${escapeHtml(err.message || 'Failed')}</p></div>`;
+    }
+  }
+
+  async function refreshAnnouncements() {
+    const list = panel.querySelector('#studentAnnouncementsList');
+    list.innerHTML = 'Loading...';
+    try {
+      const payload = await studentApiJson('/api/student/messages/announcements');
+      const rows = payload.announcements || [];
+      if (!rows.length) {
+        list.innerHTML = '<div class="empty-state"><p>No announcements yet.</p></div>';
+        return;
+      }
+      list.innerHTML = rows.slice(0, 40).map((a) =>
+        `<div class="result-item">
+          <div class="result-header">
+            <div class="result-title">#${a.id} · ${escapeHtml(a.title || '')}</div>
+            <span class="status-badge ${a.is_read ? 'status-graded' : 'status-pending'}">${a.is_read ? 'Read' : 'Unread'}</span>
+          </div>
+          <div class="result-feedback" style="margin-top:6px;">${escapeHtml(a.message || '')}</div>
+          <div class="result-actions" style="margin-top:8px;">
+            <button type="button" class="result-edit-btn" data-mark-read="${a.id}">Mark Read</button>
+          </div>
+        </div>`
+      ).join('');
+    } catch (err) {
+      list.innerHTML = `<div class="empty-state"><p style="color:#ffb8c7;">${escapeHtml(err.message || 'Failed')}</p></div>`;
+    }
+  }
+
+  async function refreshQaThreads() {
+    const list = panel.querySelector('#studentQaThreadsList');
+    list.innerHTML = 'Loading...';
+    try {
+      const payload = await studentApiJson('/api/student/qa/threads');
+      const rows = payload.threads || [];
+      if (!rows.length) {
+        list.innerHTML = '<div class="empty-state"><p>No Q&A threads yet.</p></div>';
+        return;
+      }
+      list.innerHTML = rows.slice(0, 30).map((t) =>
+        `<div class="result-item">
+          <div class="result-header">
+            <div class="result-title">#${t.id} · ${escapeHtml(t.title || '')}</div>
+            <span class="status-badge ${t.is_open ? 'status-review' : 'status-graded'}">${t.is_open ? 'Open' : 'Closed'}</span>
+          </div>
+          <div class="result-subtitle">Staff: ${escapeHtml(t.staff_email || '')} · Subject: ${escapeHtml(String(t.subject_id || ''))}</div>
+          <div class="result-actions" style="margin-top:8px;">
+            <button type="button" class="result-edit-btn" data-view-thread="${t.id}">View Messages</button>
+          </div>
+        </div>`
+      ).join('');
+    } catch (err) {
+      list.innerHTML = `<div class="empty-state"><p style="color:#ffb8c7;">${escapeHtml(err.message || 'Failed')}</p></div>`;
+    }
+  }
+
+  panel.querySelector('#studentQaCreateForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const msg = panel.querySelector('#studentQaCreateMsg');
+    const subjectId = Number(String(panel.querySelector('#studentQaSubjectId').value || '').trim());
+    const staffEmail = String(panel.querySelector('#studentQaStaffEmail').value || '').trim();
+    const title = String(panel.querySelector('#studentQaTitle').value || '').trim();
+    const message = String(panel.querySelector('#studentQaMessage').value || '').trim();
+
+    if (!Number.isFinite(subjectId) || subjectId <= 0 || !staffEmail || !title || !message) {
+      msg.style.color = '#ffb8c7';
+      msg.textContent = 'Fill subject ID, staff, title and message.';
+      return;
+    }
+
+    try {
+      const payload = await studentApiJson('/api/student/qa/threads', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ subjectId, staffEmail, title, message }),
+      });
+      msg.style.color = '#9de9ff';
+      msg.textContent = `Thread created (#${payload.thread?.id || '-'})`;
+      showToast('Q&A thread created', 'success');
+      panel.querySelector('#studentQaMessage').value = '';
+      panel.querySelector('#studentQaTitle').value = '';
+      await refreshQaThreads();
+    } catch (err) {
+      msg.style.color = '#ffb8c7';
+      msg.textContent = err.message || 'Failed to create thread';
+    }
+  });
+
+  panel.addEventListener('click', async (e) => {
+    const markReadBtn = e.target.closest('[data-mark-read]');
+    if (markReadBtn) {
+      const id = markReadBtn.getAttribute('data-mark-read');
+      try {
+        await studentApiJson(`/api/student/messages/${encodeURIComponent(id)}/read`, { method: 'POST' });
+        await refreshAnnouncements();
+      } catch (err) {
+        showToast(err.message || 'Failed to mark as read', 'error');
+      }
+      return;
+    }
+
+    const viewBtn = e.target.closest('[data-view-thread]');
+    if (viewBtn) {
+      const id = viewBtn.getAttribute('data-view-thread');
+      try {
+        const payload = await studentApiJson(`/api/student/qa/threads/${encodeURIComponent(id)}/messages`);
+        const lines = (payload.messages || []).map((m) => `${m.sender_role}: ${m.message}`).join('\n\n');
+        alert(lines || 'No messages in this thread yet.');
+      } catch (err) {
+        showToast(err.message || 'Failed to load thread messages', 'error');
+      }
+    }
+  });
+
+  panel.querySelector('#studentCommsRefreshBtn').addEventListener('click', async () => {
+    await Promise.all([refreshEmergency(), refreshAnnouncements(), refreshQaThreads()]);
+    showToast('Announcements refreshed', 'success');
+  });
+
+  refreshEmergency();
+  refreshAnnouncements();
+  refreshQaThreads();
+}
 
 // ── Navbar ────────────────────────────────────────────────────
 function initNavbar() {

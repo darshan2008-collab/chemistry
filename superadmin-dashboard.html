@@ -23,54 +23,63 @@
             <p id="welcome">Welcome</p>
         </header>
 
-        <div class="grid">
-            <section class="card">
-                <h2>Create / Update Staff</h2>
-                <form id="staffForm" class="form" novalidate>
-                    <label for="staffEmail">Username</label>
-                    <input id="staffEmail" type="text" placeholder="e.g. shreekesavan" required />
+        <nav class="admin-menu" aria-label="Super Admin Sections">
+            <button type="button" class="admin-menu-btn active" data-menu-target="staff" aria-selected="true">Staff</button>
+            <button type="button" class="admin-menu-btn" data-menu-target="assignments" aria-selected="false">Assignments</button>
+            <button type="button" class="admin-menu-btn" data-menu-target="operations" aria-selected="false">Operations</button>
+        </nav>
 
-                    <label for="staffName">Full Name</label>
-                    <input id="staffName" type="text" placeholder="Staff full name" required />
+        <section class="menu-panel active" data-panel="staff">
 
-                    <label for="staffRole">Role</label>
-                    <input id="staffRole" type="text" value="Chemistry Teacher" required />
+            <div class="grid">
+                <section class="card">
+                    <h2>Create / Update Staff</h2>
+                    <form id="staffForm" class="form" novalidate>
+                        <label for="staffEmail">Username</label>
+                        <input id="staffEmail" type="text" placeholder="e.g. shreekesavan" required />
 
-                    <label for="staffPassword">Password</label>
-                    <input id="staffPassword" type="text" placeholder="Min 6 characters" required />
+                        <label for="staffName">Full Name</label>
+                        <input id="staffName" type="text" placeholder="Staff full name" required />
 
-                    <button class="btn primary" type="submit">Save Staff Account</button>
-                    <p id="staffMsg" class="msg"></p>
-                </form>
-            </section>
+                        <label for="staffRole">Role</label>
+                        <input id="staffRole" type="text" value="Chemistry Teacher" required />
 
-            <section class="card">
-                <h2>Import Students via Excel</h2>
-                <form id="importForm" class="form" novalidate>
-                    <label for="stream">Default Stream (optional)</label>
-                    <input id="stream" type="text" placeholder="e.g. CSE-A" />
+                        <label for="staffPassword">Password</label>
+                        <input id="staffPassword" type="text" placeholder="Min 6 characters" required />
 
-                    <label for="studentFile">Excel File (.xlsx/.xls/.csv)</label>
-                    <input id="studentFile" type="file" accept=".xlsx,.xls,.csv" required />
+                        <button class="btn primary" type="submit">Save Staff Account</button>
+                        <p id="staffMsg" class="msg"></p>
+                    </form>
+                </section>
 
-                    <button class="btn" type="submit">Upload & Import Students</button>
-                    <p id="importMsg" class="msg"></p>
-                </form>
-            </section>
-        </div>
+                <section class="card">
+                    <h2>Import Students via Excel</h2>
+                    <form id="importForm" class="form" novalidate>
+                        <label for="stream">Default Stream (optional)</label>
+                        <input id="stream" type="text" placeholder="e.g. CSE-A" />
 
-        <section class="card">
-            <div class="head-row">
-                <h2>Staff Accounts</h2>
-                <button class="btn ghost" id="refreshBtn" type="button">Refresh</button>
+                        <label for="studentFile">Excel File (.xlsx/.xls/.csv)</label>
+                        <input id="studentFile" type="file" accept=".xlsx,.xls,.csv" required />
+
+                        <button class="btn" type="submit">Upload & Import Students</button>
+                        <p id="importMsg" class="msg"></p>
+                    </form>
+                </section>
             </div>
-            <div id="staffList" class="list"></div>
-        </section>
 
-        <section class="card actions-card">
-            <a class="btn nav" href="staff-dashboard.html">Open Staff Dashboard</a>
-            <a class="btn nav" href="grade.html">Open Grading Console</a>
-            <button id="logoutBtn" class="logout" type="button">Logout Securely</button>
+            <section class="card">
+                <div class="head-row">
+                    <h2>Staff Accounts</h2>
+                    <button class="btn ghost" id="refreshBtn" type="button">Refresh</button>
+                </div>
+                <div id="staffList" class="list"></div>
+            </section>
+
+            <section class="card actions-card">
+                <a class="btn nav" href="staff-dashboard.html">Open Staff Dashboard</a>
+                <a class="btn nav" href="grade.html">Open Grading Console</a>
+                <button id="logoutBtn" class="logout" type="button">Logout Securely</button>
+            </section>
         </section>
     </main>
 
