@@ -28,9 +28,13 @@ const allowedStudentUploadMimeTypes = new Set([
   'image/png',
   'image/jpeg',
   'image/jpg',
+  'image/webp',
+  'image/heic',
+  'image/heif'
 ]);
 
-const allowedStudentUploadExtensions = new Set(['.pdf', '.ppt', '.pptx', '.png', '.jpg', '.jpeg']);
+const allowedStudentUploadExtensions = new Set(['.pdf', '.ppt', '.pptx', '.png', '.jpg', '.jpeg', '.webp', '.heic', '.heif']);
+
 
 const staffDefaultEmail = (process.env.STAFF_DEFAULT_EMAIL || 'admin@chemtest.in').trim().toLowerCase();
 const staffDefaultPassword = process.env.STAFF_DEFAULT_PASSWORD || 'ChangeThisNow_2026!';
@@ -40,6 +44,12 @@ const superAdminDefaultEmail = (process.env.SUPERADMIN_DEFAULT_EMAIL || 'unitary
 const superAdminDefaultPassword = process.env.SUPERADMIN_DEFAULT_PASSWORD || 'unitary@10';
 const superAdminDefaultName = process.env.SUPERADMIN_DEFAULT_NAME || 'Unitary X';
 const superAdminDefaultRole = process.env.SUPERADMIN_DEFAULT_ROLE || 'Super Admin';
+
+// UHV staff account defaults
+const uhvStaffEmail = (process.env.UHV_STAFF_EMAIL || 'vijayakumar').trim().toLowerCase();
+const uhvStaffPassword = process.env.UHV_STAFF_PASSWORD || 'uhv@123';
+const uhvStaffName = process.env.UHV_STAFF_NAME || 'Vijayakumar';
+const uhvStaffRole = process.env.UHV_STAFF_ROLE || 'UHV Teacher';
 
 app.use(express.json({ limit: '1mb' }));
 
@@ -2690,7 +2700,20 @@ app.get('/student/storage/quota', requireAuth('student'), async (req, res, next)
   }
 });
 
+// ── Subjects list (student + staff) ──────────────────────────────────────────
+app.get('/subjects', requireAuth(['staff', 'student']), async (_req, res, next) => {
+  try {
+    const result = await pool.query(
+      `SELECT id, code, name FROM subjects WHERE is_active = TRUE ORDER BY name ASC`
+    );
+    res.json({ subjects: result.rows.map(r => ({ id: Number(r.id), code: r.code, name: r.name })) });
+  } catch (err) {
+    next(err);
+  }
+});
+
 function normalizeSubmissionRow(row) {
+
   let images = [];
   try {
     if (typeof row.images === 'string') {
@@ -3828,6 +3851,21 @@ async function upsertDefaultStaffAccount() {
   console.log(`Upserted default staff account: ${staffDefaultEmail}`);
 }
 
+async function upsertUHVStaffAccount() {
+  await pool.query(
+    `INSERT INTO staff_accounts (email, full_name, role, password_hash, is_active)
+     VALUES ($1, $2, $3, $4, TRUE)
+     ON CONFLICT (email)
+     DO UPDATE SET full_name = EXCLUDED.full_name,
+                   role = EXCLUDED.role,
+                   password_hash = EXCLUDED.password_hash,
+                   is_active = TRUE,
+                   updated_at = NOW()`,
+    [uhvStaffEmail, uhvStaffName, uhvStaffRole, hashPassword(uhvStaffPassword)]
+  );
+  console.log(`Upserted UHV staff account: ${uhvStaffEmail}`);
+}
+
 async function upsertDefaultSuperAdminAccount() {
   await pool.query(
     `INSERT INTO staff_accounts (email, full_name, role, password_hash, is_active)
@@ -3852,6 +3890,15 @@ async function ensureDefaultSubject() {
                    is_active = TRUE,
                    updated_at = NOW()`
   );
+  // Ensure UHV subject exists
+  await pool.query(
+    `INSERT INTO subjects (code, name, is_active)
+     VALUES ('UHV', 'Universal Human Values', TRUE)
+     ON CONFLICT (code)
+     DO UPDATE SET name = EXCLUDED.name,
+                   is_active = TRUE,
+                   updated_at = NOW()`
+  );
 }
 
 async function backfillSubmissionSubjectId() {
@@ -3862,6 +3909,12 @@ async function backfillSubmissionSubjectId() {
      WHERE subject_id IS NULL`,
     [defaultSubjectId]
   );
+}
+
+async function getSubjectIdByCode(code) {
+  const result = await pool.query(`SELECT id FROM subjects WHERE code = $1 LIMIT 1`, [normalizeSubjectCode(code)]);
+  if (!result.rows.length) throw new Error(`Subject ${code} not found`);
+  return Number(result.rows[0].id);
 }
 
 async function ensureBaselineAssignments() {
@@ -3895,6 +3948,47 @@ async function ensureBaselineAssignments() {
      DO UPDATE SET is_active = TRUE, updated_at = NOW()`,
     [defaultSubjectId]
   );
+}
+
+async function ensureUHVAssignments() {
+  let uhvSubjectId;
+  try {
+    uhvSubjectId = await getSubjectIdByCode('UHV');
+  } catch (_err) {
+    console.warn('[UHV] UHV subject not found, skipping UHV assignments');
+    return;
+  }
+
+  // Assign all students to UHV subject
+  await pool.query(
+    `INSERT INTO student_subject_assignments (reg_no, subject_id, is_active)
+     SELECT s.reg_no, $1, TRUE
+     FROM students s
+     ON CONFLICT (reg_no, subject_id)
+     DO UPDATE SET is_active = TRUE, updated_at = NOW()`,
+    [uhvSubjectId]
+  );
+
+  // Assign UHV teacher to UHV subject
+  await pool.query(
+    `INSERT INTO staff_subject_assignments (staff_email, subject_id, is_active)
+     VALUES ($1, $2, TRUE)
+     ON CONFLICT (staff_email, subject_id)
+     DO UPDATE SET is_active = TRUE, updated_at = NOW()`,
+    [uhvStaffEmail, uhvSubjectId]
+  );
+
+  // Map all students to UHV teacher for UHV subject
+  await pool.query(
+    `INSERT INTO student_staff_subject_assignments (reg_no, staff_email, subject_id, is_active)
+     SELECT s.reg_no, $1, $2, TRUE
+     FROM students s
+     ON CONFLICT (reg_no, staff_email, subject_id)
+     DO UPDATE SET is_active = TRUE, updated_at = NOW()`,
+    [uhvStaffEmail, uhvSubjectId]
+  );
+
+  console.log(`[UHV] UHV subject assignments ensured for all students → ${uhvStaffEmail}`);
 }
 
 async function seedStudentsIfEmpty() {
@@ -4016,6 +4110,7 @@ async function bootstrap() {
   await backfillMissingStudentAuth();
   await enforceDefaultPasswordForFirstLoginAccounts();
   await upsertDefaultStaffAccount();
+  await upsertUHVStaffAccount();
   await upsertDefaultSuperAdminAccount();
   await backfillSubmissionSubjectId();
   if (baselineAssignmentsOnStartup) {
@@ -4024,6 +4119,8 @@ async function bootstrap() {
   } else {
     console.log('Startup baseline assignments are disabled (BASELINE_ASSIGNMENTS_ON_STARTUP=false)');
   }
+  // Always ensure UHV assignments are set up
+  await ensureUHVAssignments();
   await syncAllStudentQuotas();
   dbReady = true;
 

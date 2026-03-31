@@ -642,6 +642,7 @@ details.staff-profile-menu summary::-webkit-details-marker {
 
 .filter-select option {
   background: var(--bg2);
+  color: var(--text);
 }
 
 /* ── Submissions List ────────────────────────────────────────── */

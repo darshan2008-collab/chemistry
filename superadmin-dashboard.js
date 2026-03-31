@@ -290,7 +290,15 @@
                             <button class="btn ghost" type="button" id="assignClearAllBtn" style="font-size:0.85rem;">Clear All</button>
                         </div>
                     </div>
-                    <input id="assignStudentSearch" type="text" placeholder="🔍 Search by register no or name..." style="width:100%;border:1px solid var(--line);border-radius:12px;background:var(--panel-strong);color:var(--text);padding:11px 12px;font-size:0.9rem;margin-bottom:12px;" />
+                    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
+                        <input id="assignStudentSearch" type="text" placeholder="🔍 Search by register no or name..." style="flex:1;min-width:200px;border:1px solid var(--line);border-radius:12px;background:var(--panel-strong);color:var(--text);padding:11px 12px;font-size:0.9rem;" />
+                        <select id="assignDeptFilter" style="border:1px solid var(--line);border-radius:12px;background:var(--panel-strong);color:var(--text);padding:11px 12px;font-size:0.9rem;min-width:140px;">
+                            <option value="all">All Departments</option>
+                        </select>
+                        <select id="assignSectionFilter" style="border:1px solid var(--line);border-radius:12px;background:var(--panel-strong);color:var(--text);padding:11px 12px;font-size:0.9rem;min-width:120px;">
+                            <option value="all">All Sections</option>
+                        </select>
+                    </div>
                     <div id="assignStudentList" style="border:1px solid var(--line);border-radius:12px;background:var(--panel-strong);padding:12px 0;max-height:360px;overflow-y:auto;font-size:0.88rem;"></div>
                 </section>
 
@@ -340,6 +348,8 @@
 
         const studentList = panel.querySelector('#assignStudentList');
         const studentSearch = panel.querySelector('#assignStudentSearch');
+        const deptFilter = panel.querySelector('#assignDeptFilter');
+        const sectionFilter = panel.querySelector('#assignSectionFilter');
         const staffSel = panel.querySelector('#assignStaff');
         const subjectSel = panel.querySelector('#assignSubject');
         const msg = panel.querySelector('#assignMsg');
@@ -347,6 +357,64 @@
         const newSubjectCodeInput = panel.querySelector('#assignNewSubjectCode');
         const newSubjectNameInput = panel.querySelector('#assignNewSubjectName');
         let allStudents = [];
+
+        function extractMetadata(regNo) {
+            const match = String(regNo || '').trim().match(/([A-Z]+)(\d+)$/i);
+            if (!match) return { dept: 'OTHER', sec: 'Unknown', streamName: 'Other' };
+            
+            const deptCode = match[1].toUpperCase();
+            const rollInt = parseInt(match[2], 10);
+            
+            let deptLabel = deptCode;
+            let sectionLetter = 'M';
+
+            if (deptCode === 'BAD') {
+                deptLabel = 'AIDS';
+                if (rollInt <= 60) sectionLetter = 'A';
+                else if (rollInt <= 120) sectionLetter = 'B';
+                else sectionLetter = 'C';
+            } else if (deptCode === 'BAM') {
+                deptLabel = 'AIML';
+                if (rollInt <= 60) sectionLetter = 'A';
+                else if (rollInt <= 120) sectionLetter = 'B';
+                else sectionLetter = 'C';
+            } else if (deptCode === 'BCS') {
+                deptLabel = 'CSE';
+                if (rollInt <= 60) sectionLetter = 'A';
+                else if (rollInt <= 120) sectionLetter = 'B';
+                else if (rollInt <= 180) sectionLetter = 'C';
+                else sectionLetter = 'D';
+            } else if (deptCode === 'BIT') {
+                deptLabel = 'IT';
+                if (rollInt <= 60) sectionLetter = 'A';
+                else if (rollInt <= 120) sectionLetter = 'B';
+                else sectionLetter = 'C';
+            } else if (deptCode === 'BSC') {
+                deptLabel = 'CSBS';
+                if (rollInt <= 60) sectionLetter = 'A';
+                else if (rollInt <= 120) sectionLetter = 'B';
+                else sectionLetter = 'C';
+            } else {
+                deptLabel = deptCode;
+                sectionLetter = 'A';
+            }
+
+            return { dept: deptLabel, sec: sectionLetter, streamName: `${deptLabel}-${sectionLetter}` };
+        }
+
+        function populateFilters() {
+            const deptSet = new Set();
+            const secSet = new Set();
+            allStudents.forEach(s => {
+                const { dept, sec } = extractMetadata(s.reg_no);
+                if (dept !== 'OTHER') deptSet.add(dept);
+                if (sec !== 'Unknown') secSet.add(sec);
+            });
+            deptFilter.innerHTML = '<option value="all">All Departments</option>' + 
+                Array.from(deptSet).sort().map(d => `<option value="${d}">${d}</option>`).join('');
+            sectionFilter.innerHTML = '<option value="all">All Sections</option>' + 
+                Array.from(secSet).sort().map(s => `<option value="${s}">${s}</option>`).join('');
+        }
 
         function setMsg(text, isError = false) {
             msg.style.color = isError ? '#ffb8c7' : '#9de9ff';
@@ -370,33 +438,53 @@
             return Array.from(checkboxes).map((cb) => cb.value);
         }
 
-        function renderStudentOptions(queryText = '') {
-            const q = String(queryText || '').trim().toLowerCase();
-            const filtered = q
-                ? allStudents.filter((s) =>
-                    String(s.reg_no || '').toLowerCase().includes(q) ||
-                    String(s.full_name || '').toLowerCase().includes(q)
-                )
-                : allStudents;
+        function renderStudentOptions() {
+            const q = String(studentSearch.value || '').trim().toLowerCase();
+            const dVal = deptFilter.value;
+            const sVal = sectionFilter.value;
+
+            const filtered = allStudents.filter((s) => {
+                const { dept, sec } = extractMetadata(s.reg_no);
+                const mQuery = !q || String(s.reg_no || '').toLowerCase().includes(q) || String(s.full_name || '').toLowerCase().includes(q);
+                const mDept = dVal === 'all' || dVal === dept;
+                const mSec = sVal === 'all' || sVal === sec;
+                
+                return mQuery && mDept && mSec;
+            });
 
             if (!filtered.length) {
                 studentList.innerHTML = '<div style="padding:16px;text-align:center;color:var(--muted);">No matching students found</div>';
                 return;
             }
 
-            studentList.innerHTML = filtered.map((s) => {
-                const regNo = escapeHtml(String(s.reg_no || ''));
-                const fullName = escapeHtml(String(s.full_name || ''));
-                return `
-                    <label style="display:flex;align-items:center;padding:10px 12px;border-bottom:1px solid var(--line);cursor:pointer;user-select:none;transition:background-color 0.2s;">
-                        <input type="checkbox" value="${regNo}" style="margin-right:12px;cursor:pointer;width:18px;height:18px;" />
-                        <div style="flex:1;">
-                            <div style="font-weight:600;color:var(--text);">${regNo}</div>
-                            <div style="font-size:0.85rem;color:var(--muted);">${fullName}</div>
-                        </div>
-                    </label>
-                `;
-            }).join('');
+            const groups = {};
+            filtered.forEach(s => {
+                const { streamName } = extractMetadata(s.reg_no);
+                const key = streamName;
+                if (!groups[key]) groups[key] = [];
+                groups[key].push(s);
+            });
+
+            const sortedKeys = Object.keys(groups).sort();
+            
+            let html = '';
+            sortedKeys.forEach(k => {
+                html += `<div style="padding:6px 12px; background:var(--bg-1); border-bottom:1px solid var(--line); border-top:1px solid var(--line); font-weight:800; color:var(--accent); font-size:0.7rem; text-transform:uppercase; letter-spacing:0.06em; position:sticky; top:0; z-index:2; margin-top:-1px;">Stream: ${k}</div>`;
+                html += groups[k].map(s => {
+                    const regNo = escapeHtml(String(s.reg_no || ''));
+                    const fullName = escapeHtml(String(s.full_name || ''));
+                    return `
+                        <label style="display:flex;align-items:center;padding:10px 12px;border-bottom:1px solid var(--line);cursor:pointer;user-select:none;transition:background-color 0.2s;">
+                            <input type="checkbox" value="${regNo}" style="margin-right:12px;cursor:pointer;width:18px;height:18px;" />
+                            <div style="flex:1;">
+                                <div style="font-weight:600;color:var(--text);">${regNo}</div>
+                                <div style="font-size:0.85rem;color:var(--muted);">${fullName}</div>
+                            </div>
+                        </label>
+                    `;
+                }).join('');
+            });
+            studentList.innerHTML = html;
 
             // Add hover effect
             const labels = studentList.querySelectorAll('label');
@@ -423,7 +511,8 @@
                 const subjects = (subjectsPayload.subjects || []).filter((s) => s.id && s.is_active);
 
                 allStudents = students;
-                renderStudentOptions(studentSearch.value);
+                populateFilters();
+                renderStudentOptions();
                 fillSelect(staffSel, staff, 'email', (s) => `${s.email} - ${s.full_name || ''}`);
                 fillSelect(subjectSel, subjects, 'id', (s) => `${s.code || ''} - ${s.name || ''}`);
             } catch (err) {
@@ -431,9 +520,9 @@
             }
         }
 
-        studentSearch.addEventListener('input', () => {
-            renderStudentOptions(studentSearch.value);
-        });
+        studentSearch.addEventListener('input', renderStudentOptions);
+        deptFilter.addEventListener('change', renderStudentOptions);
+        sectionFilter.addEventListener('change', renderStudentOptions);
 
         async function refreshMatrix() {
             matrix.innerHTML = 'Loading...';

@@ -124,6 +124,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initPasswordModal();
   prefillStudentFields();
   initParticles();
+  await loadSubjectDropdown();       // ← populate subject selector
   await updateStats();
   initDropZone();
   initForm();
@@ -132,6 +133,39 @@ document.addEventListener('DOMContentLoaded', async () => {
   initStudentPersonalNotesPanel();
   initLightbox();
 });
+
+// ── Subject dropdown loader ────────────────────────────────────
+async function loadSubjectDropdown() {
+  const select = document.getElementById('subjectSelect');
+  if (!select) return;
+  try {
+    const token = getStudentAuthTokenOrThrow();
+    const res = await fetch('/api/subjects', {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!res.ok) throw new Error('Failed to load subjects');
+    const { subjects } = await res.json();
+    select.innerHTML = '<option value="" disabled selected>Select subject</option>';
+    (subjects || []).forEach(s => {
+      const opt = document.createElement('option');
+      opt.value = String(s.id);          // numeric DB id as value
+      opt.dataset.code = s.code;         // keep code for display
+      opt.textContent = s.name;
+      select.appendChild(opt);
+    });
+    if (!subjects || subjects.length === 0) {
+      select.innerHTML = '<option value="" disabled selected>No subjects available</option>';
+    }
+  } catch (err) {
+    console.warn('[SUBJECTS] Failed to load, using static fallback:', err.message);
+    // static fallback so the form is always usable
+    select.innerHTML = `
+      <option value="" disabled selected>Select subject</option>
+      <option value="chemistry_fallback" data-code="CHEMISTRY">Chemistry</option>
+      <option value="uhv_fallback" data-code="UHV">UHV</option>
+    `;
+  }
+}
 
 async function studentApiJson(url, options = {}) {
   const token = getStudentAuthTokenOrThrow();
@@ -871,13 +905,17 @@ function initDropZone() {
     return;
   }
   console.log('[INIT] Setting up drop zone and file input');
-  zone.addEventListener('click', () => {
+  zone.addEventListener('click', (e) => {
+    if (e.target === input) return;
     console.log('[USER] Clicked drop zone, triggering file picker');
     input.click();
   });
   input.addEventListener('change', () => {
     console.log('[USER] File picker closed with', input.files.length, 'files selected');
-    handleFiles([...input.files]);
+    if (input.files.length > 0) {
+      handleFiles([...input.files]);
+      input.value = '';
+    }
   });
   zone.addEventListener('dragover', e => { e.preventDefault(); zone.classList.add('dragover'); });
   zone.addEventListener('dragleave', () => zone.classList.remove('dragover'));
@@ -1032,7 +1070,18 @@ async function deleteMySubmission(submissionId) {
 async function handleSubmit(e) {
   e.preventDefault();
 
-  // Validate
+
+  // Validate subject
+  const subjectEl = document.getElementById('subjectSelect');
+  const subjectErr = document.getElementById('subjectError');
+  if (!subjectEl || !subjectEl.value) {
+    if (subjectErr) subjectErr.textContent = 'Please select a subject';
+    subjectEl && subjectEl.focus();
+    return;
+  }
+  if (subjectErr) subjectErr.textContent = '';
+
+  // Validate title
   const titleEl = document.getElementById('testTitle');
   const titleErr = document.getElementById('titleError');
   if (!titleEl || !titleEl.value.trim()) {
@@ -1091,11 +1140,17 @@ async function handleSubmit(e) {
       throw new Error('Upload succeeded but no image URLs returned');
     }
 
+    const selectedOpt = subjectEl.options[subjectEl.selectedIndex];
+    const subjectCode = selectedOpt?.dataset?.code || subjectEl.value || '';
+    const subjectId = /^\d+$/.test(String(subjectEl.value)) ? Number(subjectEl.value) : null;
+    const subjectName = selectedOpt?.textContent || subjectCode;
+
     const submission = {
       id: editingSubmissionId || generateId(),
       studentName: session.name,
       rollNumber: session.regNo,
-      subject: 'Chemistry',
+      subjectId: subjectId,
+      subject: subjectCode,
       classroom: '',
       testTitle: document.getElementById('testTitle').value.trim(),
       notes: (document.getElementById('notes') || {}).value || '',
@@ -1104,6 +1159,7 @@ async function handleSubmit(e) {
       status: 'pending', marks: null, totalMarks: null, feedback: '',
       submittedAt: new Date().toISOString(), gradedAt: null,
     };
+    console.log('[SUBMIT] Subject selected:', subjectName, '| subjectId:', subjectId, '| code:', subjectCode);
 
     if (editingSubmissionId) {
       await updateSubmission(editingSubmissionId, {

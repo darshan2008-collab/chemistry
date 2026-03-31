@@ -469,6 +469,12 @@ body {
   cursor: pointer;
 }
 
+.input-wrap select option {
+  background-color: var(--bg2);
+  color: var(--text);
+  font-family: 'Inter', sans-serif;
+}
+
 .input-wrap input:focus,
 .input-wrap select:focus,
 .input-wrap textarea:focus {
