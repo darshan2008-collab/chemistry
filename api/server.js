@@ -18,9 +18,17 @@ const syncStudentsOnStartup = String(process.env.STUDENTS_SYNC_ON_STARTUP || 'tr
 const baselineAssignmentsOnStartup = String(process.env.BASELINE_ASSIGNMENTS_ON_STARTUP || 'false').trim().toLowerCase() !== 'false';
 const uhvAssignmentsOnStartup = String(process.env.UHV_ASSIGNMENTS_ON_STARTUP || 'false').trim().toLowerCase() !== 'false';
 const resyncToken = process.env.RESYNC_TOKEN || '';
-const authPepper = process.env.AUTH_PEPPER || 'change_this_auth_pepper';
+const authPepper = requiredEnv('AUTH_PEPPER');
 const sessionTtlHours = Number(process.env.AUTH_SESSION_TTL_HOURS || 24);
 const studentQuotaBytesDefault = Number(process.env.STUDENT_QUOTA_BYTES || 500 * 1024 * 1024);
+
+function requiredEnv(name) {
+  const value = String(process.env[name] || '').trim();
+  if (!value) {
+    throw new Error(`Missing required environment variable: ${name}`);
+  }
+  return value;
+}
 
 const allowedStudentUploadMimeTypes = new Set([
   'application/pdf',
@@ -44,18 +52,18 @@ const allowedStudentPptMimeTypes = new Set([
 const allowedStudentPptExtensions = new Set(['.ppt', '.pptx']);
 
 
-const staffDefaultEmail = (process.env.STAFF_DEFAULT_EMAIL || 'admin@chemtest.in').trim().toLowerCase();
-const staffDefaultPassword = process.env.STAFF_DEFAULT_PASSWORD || 'ChangeThisNow_2026!';
+const staffDefaultEmail = requiredEnv('STAFF_DEFAULT_EMAIL').toLowerCase();
+const staffDefaultPassword = requiredEnv('STAFF_DEFAULT_PASSWORD');
 const staffDefaultName = process.env.STAFF_DEFAULT_NAME || 'System Admin';
 const staffDefaultRole = process.env.STAFF_DEFAULT_ROLE || 'Chemistry Teacher';
-const superAdminDefaultEmail = (process.env.SUPERADMIN_DEFAULT_EMAIL || 'unitaryx').trim().toLowerCase();
-const superAdminDefaultPassword = process.env.SUPERADMIN_DEFAULT_PASSWORD || 'unitary@10';
+const superAdminDefaultEmail = requiredEnv('SUPERADMIN_DEFAULT_EMAIL').toLowerCase();
+const superAdminDefaultPassword = requiredEnv('SUPERADMIN_DEFAULT_PASSWORD');
 const superAdminDefaultName = process.env.SUPERADMIN_DEFAULT_NAME || 'Unitary X';
 const superAdminDefaultRole = process.env.SUPERADMIN_DEFAULT_ROLE || 'Super Admin';
 
 // UHV staff account defaults
-const uhvStaffEmail = (process.env.UHV_STAFF_EMAIL || 'vijayakumar').trim().toLowerCase();
-const uhvStaffPassword = process.env.UHV_STAFF_PASSWORD || 'uhv@123';
+const uhvStaffEmail = requiredEnv('UHV_STAFF_EMAIL').toLowerCase();
+const uhvStaffPassword = requiredEnv('UHV_STAFF_PASSWORD');
 const uhvStaffName = process.env.UHV_STAFF_NAME || 'Vijayakumar';
 const uhvStaffRole = process.env.UHV_STAFF_ROLE || 'UHV Teacher';
 
