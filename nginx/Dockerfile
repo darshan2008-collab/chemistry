@@ -36,4 +36,3 @@ COPY superadmin-dashboard.js /usr/share/nginx/html/superadmin-dashboard.js
 COPY superadmin-login.js /usr/share/nginx/html/superadmin-login.js
 COPY student.js /usr/share/nginx/html/student.js
 COPY student-login.js /usr/share/nginx/html/student-login.js
-COPY students-db.js /usr/share/nginx/html/students-db.js

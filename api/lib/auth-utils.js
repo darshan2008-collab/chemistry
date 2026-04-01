@@ -27,6 +27,7 @@ function createAuthUtils({ authPepper, passwordHashRounds, crypto, bcrypt }) {
     hashPassword,
     verifyPassword,
     createSessionToken,
+    isBcryptHash,
   };
 }
 

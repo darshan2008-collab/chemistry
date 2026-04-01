@@ -23,25 +23,36 @@ function resolveImageUrl(src) {
   const raw = String(candidate || '').trim();
   if (!raw) return '';
   if (/^(data:|blob:)/i.test(raw)) return raw;
-  if (raw.startsWith('/api/uploads/')) return raw;
-  if (raw.startsWith('/uploads/')) return `/api${raw}`;
-  if (raw.startsWith('uploads/')) return `/api/${raw}`;
-  if (/^[a-zA-Z]:[\\/]/.test(raw) || raw.includes('\\')) {
+
+  let normalized = raw;
+  if (raw.startsWith('/api/uploads/')) {
+    normalized = `/api/files/${raw.slice('/api/uploads/'.length).replace(/^\/+/, '')}`;
+  } else if (raw.startsWith('/uploads/')) {
+    normalized = `/api/files/${raw.slice('/uploads/'.length).replace(/^\/+/, '')}`;
+  } else if (raw.startsWith('uploads/')) {
+    normalized = `/api/files/${raw.slice('uploads/'.length).replace(/^\/+/, '')}`;
+  } else if (/^[a-zA-Z]:[\\/]/.test(raw) || raw.includes('\\')) {
     const name = raw.split(/[/\\]/).pop();
-    return name ? `/api/uploads/${name}` : '';
-  }
-  if (/^https?:\/\//i.test(raw)) {
+    normalized = name ? `/api/files/${name}` : '';
+  } else if (/^https?:\/\//i.test(raw)) {
     try {
       const u = new URL(raw);
-      const idx = u.pathname.toLowerCase().lastIndexOf('/uploads/');
+      const idx = u.pathname.toLowerCase().lastIndexOf('/files/');
+      const uploadIdx = u.pathname.toLowerCase().lastIndexOf('/uploads/');
       if (idx >= 0) {
-        return `/api/uploads/${u.pathname.slice(idx + '/uploads/'.length).replace(/^\/+/, '')}`;
+        normalized = `/api/files/${u.pathname.slice(idx + '/files/'.length).replace(/^\/+/, '')}`;
+      } else if (uploadIdx >= 0) {
+        normalized = `/api/files/${u.pathname.slice(uploadIdx + '/uploads/'.length).replace(/^\/+/, '')}`;
       }
     } catch (_err) {
-      // ignore
+      normalized = raw;
     }
   }
-  return raw;
+
+  if (!normalized.startsWith('/api/files/')) return normalized;
+  const token = JSON.parse(sessionStorage.getItem('chemtest_staff') || 'null')?.token || '';
+  if (!token) return normalized;
+  return `${normalized}${normalized.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
 }
 
 function attachImageFallback(img) {

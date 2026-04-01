@@ -31,6 +31,8 @@ services:
     depends_on:
       chemtest-db:
         condition: service_healthy
+      chemtest-redis:
+        condition: service_healthy
     environment:
       TZ: ${TZ}
       API_PORT: ${API_PORT}
@@ -42,6 +44,8 @@ services:
       RESYNC_TOKEN: ${RESYNC_TOKEN}
       AUTH_PEPPER: ${AUTH_PEPPER}
       AUTH_SESSION_TTL_HOURS: ${AUTH_SESSION_TTL_HOURS}
+      FILE_URL_SIGNING_SECRET: ${FILE_URL_SIGNING_SECRET}
+      REDIS_URL: ${REDIS_URL}
       STAFF_DEFAULT_EMAIL: ${STAFF_DEFAULT_EMAIL}
       STAFF_DEFAULT_PASSWORD: ${STAFF_DEFAULT_PASSWORD}
       STAFF_DEFAULT_NAME: ${STAFF_DEFAULT_NAME}
@@ -95,6 +99,28 @@ services:
       start_period: 10s
     networks:
       - chemistry-net
+
+  chemtest-redis:
+    image: redis:7-alpine
+    container_name: chemtest-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis123}
+    ports:
+      - "6379:6379"
+    volumes:
+      - type: bind
+        source: ${REDIS_ROOT:-./data/redis}
+        target: /data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    networks:
+      - chemistry-net
+    environment:
+      TZ: ${TZ}
 
   chemtest-web:
     image: chemtest-web:local
