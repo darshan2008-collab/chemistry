@@ -71,10 +71,6 @@ const uhvStaffRole = process.env.UHV_STAFF_ROLE || 'UHV Teacher';
 
 app.use(express.json({ limit: '1mb' }));
 
-// ── Serve static files from uploads directory (images, etc.) ────────────
-app.use('/uploads', express.static(uploadDir));
-app.use('/api/uploads', express.static(uploadDir));
-
 function extractUploadFileName(input) {
   let raw = input;
   if (raw && typeof raw === 'object') {
@@ -139,20 +135,27 @@ function normalizeUploadUrl(url) {
       const idx = parsed.pathname.toLowerCase().lastIndexOf(marker);
       if (idx >= 0) {
         const tail = parsed.pathname.slice(idx + marker.length).replace(/^\/+/, '');
-        return `/api/uploads/${tail}`;
+        return `/api/files/${encodeURIComponent(path.basename(tail))}`;
       }
     } catch (_err) {
       // Fall through to best-effort normalization below
     }
     return raw;
   }
-  if (raw.startsWith('/api/uploads/')) return raw;
-  if (raw.startsWith('/uploads/')) return `/api${raw}`;
-  if (raw.startsWith('uploads/')) return `/api/${raw}`;
+  if (raw.startsWith('/api/files/')) return raw;
+  if (raw.startsWith('/api/uploads/')) {
+    return `/api/files/${encodeURIComponent(path.basename(raw))}`;
+  }
+  if (raw.startsWith('/uploads/')) {
+    return `/api/files/${encodeURIComponent(path.basename(raw))}`;
+  }
+  if (raw.startsWith('uploads/')) {
+    return `/api/files/${encodeURIComponent(path.basename(raw))}`;
+  }
 
   // Handle Windows/local absolute paths by taking only file name.
   if (/^[a-zA-Z]:[\\/]/.test(raw) || raw.includes('\\')) {
-    return `/api/uploads/${path.basename(raw)}`;
+    return `/api/files/${encodeURIComponent(path.basename(raw))}`;
   }
 
   // Handle any path that contains /uploads/ somewhere inside it.
@@ -160,10 +163,10 @@ function normalizeUploadUrl(url) {
   const markerIdx = raw.toLowerCase().lastIndexOf(marker);
   if (markerIdx >= 0) {
     const tail = raw.slice(markerIdx + marker.length).replace(/^\/+/, '');
-    return `/api/uploads/${tail}`;
+    return `/api/files/${encodeURIComponent(path.basename(tail))}`;
   }
 
-  return `/api/uploads/${raw.replace(/^\/+/, '')}`;
+  return `/api/files/${encodeURIComponent(path.basename(raw.replace(/^\/+/, '')))}`;
 }
 
 app.get('/files/:name', async (req, res, next) => {
@@ -174,28 +177,32 @@ app.get('/files/:name', async (req, res, next) => {
 
   try {
     const dbResult = await pool.query(
-      `SELECT mime_type, original_name, file_data
+      `SELECT stored_name, mime_type, original_name, file_data, owner_reg_no, subject_id, upload_kind
        FROM uploads
        WHERE stored_name = $1`,
       [safeName]
     );
 
-    if (dbResult.rows.length && dbResult.rows[0].file_data) {
+    if (dbResult.rows.length) {
       const row = dbResult.rows[0];
-      if (row.mime_type) {
-        res.type(row.mime_type);
-      }
-      if (row.original_name) {
-        res.setHeader('Content-Disposition', `inline; filename="${path.basename(String(row.original_name))}"`);
-      }
-      return res.send(row.file_data);
-    }
 
-    const filePath = path.join(uploadDir, safeName);
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({ error: 'File not found' });
+      if (row.file_data) {
+        if (row.mime_type) {
+          res.type(row.mime_type);
+        }
+        if (row.original_name) {
+          res.setHeader('Content-Disposition', `inline; filename="${path.basename(String(row.original_name))}"`);
+        }
+        return res.send(row.file_data);
+      }
+
+      const filePath = path.join(uploadDir, safeName);
+      if (!fs.existsSync(filePath)) {
+        return res.status(404).json({ error: 'File not found' });
+      }
+      return res.sendFile(path.resolve(filePath));
     }
-    return res.sendFile(path.resolve(filePath));
+    return res.status(404).json({ error: 'File not found' });
   } catch (err) {
     return next(err);
   }
@@ -272,10 +279,8 @@ function writeFileToStorage(relativeFolder, storedName, buffer) {
 }
 
 function toUploadsPublicUrl(relativeFolder, storedName) {
-  const safeFolder = String(relativeFolder || '').replace(/\\/g, '/').replace(/^\/+/, '').replace(/\/+$/g, '');
   const fileName = encodeURIComponent(path.basename(String(storedName || 'file')));
-  if (!safeFolder) return `/api/uploads/${fileName}`;
-  return `/api/uploads/${safeFolder}/${fileName}`;
+  return `/api/files/${fileName}`;
 }
 
 function cleanupUploadDiskCopies(fileNames) {
