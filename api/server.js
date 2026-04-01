@@ -911,7 +911,7 @@ app.get('/health', async (_req, res) => {
   }
 });
 
-app.post('/auth/student/login', loginRateLimitMiddleware, async (req, res, next) => {
+app.post('/api/auth/student/login', loginRateLimitMiddleware, async (req, res, next) => {
   try {
     const regNo = String(req.body?.regNo || '').trim().toUpperCase();
     const password = String(req.body?.password || '');
@@ -970,7 +970,7 @@ app.post('/auth/student/login', loginRateLimitMiddleware, async (req, res, next)
   }
 });
 
-app.post('/auth/student/password', requireAuth('student'), async (req, res, next) => {
+app.post('/api/auth/student/password', requireAuth('student'), async (req, res, next) => {
   try {
     const newPassword = String(req.body?.newPassword || '');
     if (newPassword.length < 6) {
@@ -990,7 +990,7 @@ app.post('/auth/student/password', requireAuth('student'), async (req, res, next
   }
 });
 
-app.post('/auth/staff/login', loginRateLimitMiddleware, async (req, res, next) => {
+app.post('/api/auth/staff/login', loginRateLimitMiddleware, async (req, res, next) => {
   try {
     const email = String(req.body?.email || '').trim().toLowerCase();
     const password = String(req.body?.password || '');
@@ -3184,7 +3184,7 @@ app.post('/admin/students/import', requireSuperAdmin, excelUpload.single('file')
   }
 });
 
-app.post('/auth/staff/password', requireAuth('staff'), async (req, res, next) => {
+app.post('/api/auth/staff/password', requireAuth('staff'), async (req, res, next) => {
   try {
     const newPassword = String(req.body?.newPassword || '');
     if (newPassword.length < 6) {

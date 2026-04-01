@@ -63,6 +63,8 @@ services:
       DB_NAME: ${DB_NAME}
       DB_USER: ${DB_USER}
       DB_PASSWORD: ${DB_PASSWORD}
+    ports:
+      - "3000:${API_PORT}"
     volumes:
       - type: bind
         source: ${UPLOADS_ROOT}
