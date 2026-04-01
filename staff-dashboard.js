@@ -142,7 +142,13 @@ async function initSubjectSelector() {
       return;
     }
 
-    selector.innerHTML = assignedSubjects.map(s => `<option value="${s.id}">${s.code} - ${s.name}</option>`).join('');
+    selector.innerHTML = '';
+    for (const subject of assignedSubjects) {
+      const option = document.createElement('option');
+      option.value = String(subject.id);
+      option.textContent = `${subject.code || ''} - ${subject.name || ''}`;
+      selector.appendChild(option);
+    }
     selector.style.display = 'block';
     
     // Set default subject
@@ -169,8 +175,20 @@ function populateFilters() {
     const sel = document.getElementById(id);
     if (!sel) return;
     const current = sel.value;
-    sel.innerHTML = `<option value="all">Any ${label}</option>` +
-      Array.from(items).sort().map(v => `<option value="${v}">${v}</option>`).join('');
+    sel.innerHTML = '';
+
+    const defaultOption = document.createElement('option');
+    defaultOption.value = 'all';
+    defaultOption.textContent = `Any ${label}`;
+    sel.appendChild(defaultOption);
+
+    for (const value of Array.from(items).sort()) {
+      const option = document.createElement('option');
+      option.value = String(value);
+      option.textContent = String(value);
+      sel.appendChild(option);
+    }
+
     if (Array.from(items).includes(current)) sel.value = current;
     else sel.value = 'all';
   };

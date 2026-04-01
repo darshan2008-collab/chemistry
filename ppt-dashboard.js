@@ -68,6 +68,14 @@ function normalizeUploadUrl(url) {
   return raw;
 }
 
+function sanitizeLinkUrl(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return '#';
+  if (raw.startsWith('/')) return raw;
+  if (/^https?:\/\//i.test(raw)) return raw;
+  return '#';
+}
+
 async function loadSubjects() {
   const payload = await apiJson('/api/staff/subjects');
   subjects = payload.subjects || [];
@@ -112,7 +120,10 @@ function renderRows(rows) {
 
     const section = document.createElement('section');
     section.className = 'subject-group';
-    section.innerHTML = `<div class="subject-head">${escapeHtml(headCode)} - ${escapeHtml(headName)} (${rowsForSubject.length})</div>`;
+    const heading = document.createElement('div');
+    heading.className = 'subject-head';
+    heading.textContent = `${headCode} - ${headName} (${rowsForSubject.length})`;
+    section.appendChild(heading);
 
     const rowsWrap = document.createElement('div');
     rowsWrap.className = 'rows';
@@ -120,19 +131,39 @@ function renderRows(rows) {
     for (const row of rowsForSubject) {
       const item = document.createElement('div');
       item.className = 'row';
-      const href = normalizeUploadUrl(row.file_url);
+      const href = sanitizeLinkUrl(normalizeUploadUrl(row.file_url));
       const student = `${String(row.student_name || '').trim() || 'Student'} (${String(row.owner_reg_no || '-').trim() || '-'})`;
       const fileName = String(row.original_name || 'PPT').trim() || 'PPT';
 
-      item.innerHTML = `
-        <div>
-          <div class="name">${escapeHtml(fileName)}</div>
-          <div class="meta">Uploaded: ${escapeHtml(formatDate(row.created_at))}</div>
-        </div>
-        <div class="meta">${escapeHtml(student)}</div>
-        <div class="meta">Size: ${escapeHtml(formatBytes(row.size_bytes))}</div>
-        <a class="link-btn" href="${escapeHtml(href)}" target="_blank" rel="noopener">Open PPT</a>
-      `;
+      const fileBlock = document.createElement('div');
+      const nameNode = document.createElement('div');
+      nameNode.className = 'name';
+      nameNode.textContent = fileName;
+      const uploadMeta = document.createElement('div');
+      uploadMeta.className = 'meta';
+      uploadMeta.textContent = `Uploaded: ${formatDate(row.created_at)}`;
+      fileBlock.appendChild(nameNode);
+      fileBlock.appendChild(uploadMeta);
+
+      const studentMeta = document.createElement('div');
+      studentMeta.className = 'meta';
+      studentMeta.textContent = student;
+
+      const sizeMeta = document.createElement('div');
+      sizeMeta.className = 'meta';
+      sizeMeta.textContent = `Size: ${formatBytes(row.size_bytes)}`;
+
+      const openLink = document.createElement('a');
+      openLink.className = 'link-btn';
+      openLink.href = href;
+      openLink.target = '_blank';
+      openLink.rel = 'noopener';
+      openLink.textContent = 'Open PPT';
+
+      item.appendChild(fileBlock);
+      item.appendChild(studentMeta);
+      item.appendChild(sizeMeta);
+      item.appendChild(openLink);
 
       rowsWrap.appendChild(item);
     }
