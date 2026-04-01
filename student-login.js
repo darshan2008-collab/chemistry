@@ -36,20 +36,12 @@ function initBg() {
 function initRegLookup() {
   const input = document.getElementById('regNo');
   const preview = document.getElementById('namePreview');
-  const previewName = document.getElementById('previewName');
+  if (!input || !preview) return;
 
+  preview.hidden = true;
   input.addEventListener('input', () => {
-    const val = input.value.trim().toUpperCase();
-    const name = STUDENTS_DB[val];
-    if (name) {
-      previewName.textContent = name;
-      preview.hidden = false;
-      input.style.borderColor = '#06b6d4';
-      document.getElementById('regErr').textContent = '';
-    } else {
-      preview.hidden = true;
-      input.style.borderColor = '';
-    }
+    document.getElementById('regErr').textContent = '';
+    input.classList.remove('err-border');
   });
 }
 
@@ -67,15 +59,6 @@ function initForm() {
     e.preventDefault();
     const regNo = document.getElementById('regNo').value.trim().toUpperCase();
     const pw = document.getElementById('password').value;
-
-    // Validate register number
-    if (!STUDENTS_DB[regNo]) {
-      document.getElementById('regErr').textContent = 'Register number not found in database';
-      document.getElementById('regNo').classList.add('err-border');
-      return;
-    }
-    document.getElementById('regErr').textContent = '';
-    document.getElementById('regNo').classList.remove('err-border');
 
     if (!pw) {
       document.getElementById('pwErr').textContent = 'Enter your password';
@@ -130,17 +113,17 @@ function initForm() {
     if (payload.mustChangePassword) {
       pendingRegNo = regNo;
       pendingToken = payload.token;
-      pendingName = payload?.student?.name || STUDENTS_DB[regNo] || '';
+      pendingName = payload?.student?.name || regNo;
       document.getElementById('changePwModal').classList.add('show');
       document.body.style.overflow = 'hidden';
       return;
     }
 
     // All good — set session and go
-    setStudentSession(regNo, payload.token, payload?.student?.name || STUDENTS_DB[regNo]);
+    setStudentSession(regNo, payload.token, payload?.student?.name || regNo);
     sessionStorage.removeItem('chemtest_staff');
     sessionStorage.removeItem('chemtest_superadmin');
-    showToast('✅ Welcome, ' + (payload?.student?.name || STUDENTS_DB[regNo]) + '!', 'success');
+    showToast('✅ Welcome, ' + (payload?.student?.name || regNo) + '!', 'success');
     setTimeout(() => { window.location.href = 'index.html'; }, 700);
   });
 
@@ -231,7 +214,7 @@ async function saveNewPassword() {
   document.getElementById('changePwModal').classList.remove('show');
   document.body.style.overflow = '';
 
-  setStudentSession(pendingRegNo, pendingToken, pendingName || STUDENTS_DB[pendingRegNo]);
+  setStudentSession(pendingRegNo, pendingToken, pendingName || pendingRegNo);
   sessionStorage.removeItem('chemtest_staff');
   sessionStorage.removeItem('chemtest_superadmin');
   showToast('🎉 Password set! Redirecting…', 'success');

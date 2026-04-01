@@ -269,23 +269,23 @@ function initUnifiedForm() {
     const regCandidate = rawId.toUpperCase();
 
     try {
-      // Always try student auth first so login does not depend on cached STUDENTS_DB in browser.
+      // Always try student auth first and rely on server-side validation.
       try {
         const payload = await apiStudentLogin(regCandidate, pw);
 
         if (payload.mustChangePassword) {
           pendingRegNo = regCandidate;
           pendingStudentToken = payload.token;
-          pendingStudentName = payload?.student?.name || STUDENTS_DB[regCandidate] || '';
+          pendingStudentName = payload?.student?.name || regCandidate;
           document.getElementById('changePwOverlay').classList.add('show');
           document.body.style.overflow = 'hidden';
           return;
         }
 
-        setStudentSession(regCandidate, payload.token, payload?.student?.name || STUDENTS_DB[regCandidate]);
+        setStudentSession(regCandidate, payload.token, payload?.student?.name || regCandidate);
         sessionStorage.removeItem('chemtest_staff');
         sessionStorage.removeItem('chemtest_superadmin');
-        showToast('👋 Welcome, ' + (payload?.student?.name || STUDENTS_DB[regCandidate]) + '!', 'ok top');
+        showToast('👋 Welcome, ' + (payload?.student?.name || regCandidate) + '!', 'ok top');
         setTimeout(() => window.location.href = 'index.html', 700);
         return;
       } catch (_studentErr) {
@@ -359,7 +359,7 @@ function initChangePwModal() {
         document.getElementById('changePwOverlay').classList.remove('show');
         document.body.style.overflow = '';
 
-        setStudentSession(pendingRegNo, pendingStudentToken, pendingStudentName || STUDENTS_DB[pendingRegNo]);
+        setStudentSession(pendingRegNo, pendingStudentToken, pendingStudentName || pendingRegNo);
         sessionStorage.removeItem('chemtest_staff');
         sessionStorage.removeItem('chemtest_superadmin');
         showToast('🎉 Password set! Redirecting…', 'ok top');
