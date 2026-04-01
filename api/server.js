@@ -7,6 +7,7 @@ const bcrypt = require('bcryptjs');
 const { Pool } = require('pg');
 const XLSX = require('xlsx');
 const ExcelJS = require('exceljs');
+const { createAuthUtils } = require('./lib/auth-utils');
 
 const app = express();
 const port = Number(process.env.API_PORT || 3000);
@@ -25,6 +26,7 @@ const sessionTtlHours = Number(process.env.AUTH_SESSION_TTL_HOURS || 24);
 const retentionDays = Math.max(Number(process.env.RETENTION_DAYS || 90), 1);
 const studentQuotaBytesDefault = Number(process.env.STUDENT_QUOTA_BYTES || 500 * 1024 * 1024);
 const passwordHashRounds = Math.max(Number(process.env.PASSWORD_HASH_ROUNDS || 12), 10);
+const authUtils = createAuthUtils({ authPepper, passwordHashRounds, crypto, bcrypt });
 
 function requiredEnv(name) {
   const value = String(process.env[name] || '').trim();
@@ -460,28 +462,16 @@ const materialUpload = multer({
   },
 });
 
-function hashPasswordLegacy(value) {
-  return crypto.createHash('sha256').update(`${String(value)}:${authPepper}`).digest('hex');
-}
-
-function isBcryptHash(hashValue) {
-  return /^\$2[aby]\$\d{2}\$/.test(String(hashValue || ''));
-}
-
 function hashPassword(value) {
-  return bcrypt.hashSync(`${String(value)}:${authPepper}`, passwordHashRounds);
+  return authUtils.hashPassword(value);
 }
 
 function verifyPassword(value, passwordHash) {
-  const input = `${String(value)}:${authPepper}`;
-  if (isBcryptHash(passwordHash)) {
-    return bcrypt.compareSync(input, String(passwordHash || ''));
-  }
-  return hashPasswordLegacy(value) === String(passwordHash || '');
+  return authUtils.verifyPassword(value, passwordHash);
 }
 
 function createSession(payload) {
-  const token = crypto.randomBytes(32).toString('hex');
+  const token = authUtils.createSessionToken();
   const expiresAt = Date.now() + (Math.max(sessionTtlHours, 1) * 60 * 60 * 1000);
   sessions.set(token, { ...payload, expiresAt });
   scheduleSessionsFlush();
