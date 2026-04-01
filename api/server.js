@@ -4,6 +4,8 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const bcrypt = require('bcryptjs');
+const helmet = require('helmet');
+const { createClient } = require('redis');
 const { Pool } = require('pg');
 const XLSX = require('xlsx');
 const ExcelJS = require('exceljs');
@@ -22,11 +24,16 @@ const baselineAssignmentsOnStartup = String(process.env.BASELINE_ASSIGNMENTS_ON_
 const uhvAssignmentsOnStartup = String(process.env.UHV_ASSIGNMENTS_ON_STARTUP || 'false').trim().toLowerCase() !== 'false';
 const resyncToken = process.env.RESYNC_TOKEN || '';
 const authPepper = requiredEnv('AUTH_PEPPER');
+const fileUrlSigningSecret = requiredEnv('FILE_URL_SIGNING_SECRET');
+const redisUrl = requiredEnv('REDIS_URL');
 const sessionTtlHours = Number(process.env.AUTH_SESSION_TTL_HOURS || 24);
+const sessionIdleMinutes = Math.max(Number(process.env.AUTH_SESSION_IDLE_MINUTES || 30), 5);
 const retentionDays = Math.max(Number(process.env.RETENTION_DAYS || 90), 1);
 const studentQuotaBytesDefault = Number(process.env.STUDENT_QUOTA_BYTES || 500 * 1024 * 1024);
 const passwordHashRounds = Math.max(Number(process.env.PASSWORD_HASH_ROUNDS || 12), 10);
 const authUtils = createAuthUtils({ authPepper, passwordHashRounds, crypto, bcrypt });
+const { isBcryptHash } = authUtils;
+const redisClient = createClient({ url: redisUrl });
 
 function requiredEnv(name) {
   const value = String(process.env[name] || '').trim();
@@ -73,6 +80,22 @@ const uhvStaffPassword = requiredEnv('UHV_STAFF_PASSWORD');
 const uhvStaffName = process.env.UHV_STAFF_NAME || 'Vijayakumar';
 const uhvStaffRole = process.env.UHV_STAFF_ROLE || 'UHV Teacher';
 
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      imgSrc: ["'self'", 'data:', 'blob:'],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'"],
+      connectSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      baseUri: ["'self'"],
+      frameAncestors: ["'none'"],
+    },
+  },
+  referrerPolicy: { policy: 'no-referrer' },
+  xContentTypeOptions: true,
+}));
 app.use(express.json({ limit: '1mb' }));
 
 function extractUploadFileName(input) {
@@ -181,32 +204,51 @@ app.get('/files/:name', async (req, res, next) => {
 
   try {
     const dbResult = await pool.query(
-      `SELECT stored_name, mime_type, original_name, file_data, owner_reg_no, subject_id, upload_kind
+      `SELECT stored_name, mime_type, original_name, owner_reg_no, subject_id, upload_kind, folder_path
        FROM uploads
        WHERE stored_name = $1`,
       [safeName]
     );
 
-    if (dbResult.rows.length) {
-      const row = dbResult.rows[0];
-
-      if (row.file_data) {
-        if (row.mime_type) {
-          res.type(row.mime_type);
-        }
-        if (row.original_name) {
-          res.setHeader('Content-Disposition', `inline; filename="${path.basename(String(row.original_name))}"`);
-        }
-        return res.send(row.file_data);
-      }
-
-      const filePath = path.join(uploadDir, safeName);
-      if (!fs.existsSync(filePath)) {
-        return res.status(404).json({ error: 'File not found' });
-      }
-      return res.sendFile(path.resolve(filePath));
+    if (!dbResult.rows.length) {
+      return res.status(404).json({ error: 'File not found' });
     }
-    return res.status(404).json({ error: 'File not found' });
+
+    const row = dbResult.rows[0];
+    const sessionToken = String(req.query?.token || '').trim();
+    const signedToken = String(req.query?.sig || '').trim();
+    const signedExp = Number(req.query?.exp || 0);
+
+    let session = await getSessionFromRequest(req);
+    if (!session && sessionToken) {
+      session = await resolveSessionByToken(sessionToken);
+    }
+
+    if (!session && signedToken && signedExp) {
+      const ok = verifyFileAccessSignature(safeName, signedExp, signedToken);
+      if (!ok) return res.status(401).json({ error: 'Unauthorized' });
+    } else {
+      if (!session) return res.status(401).json({ error: 'Unauthorized' });
+      const canRead = await canReadUploadRecord(session, row);
+      if (!canRead) return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const relativeFolder = String(row.folder_path || '').replace(/^\/+/, '');
+    const filePath = path.resolve(uploadDir, relativeFolder, safeName);
+    if (!filePath.startsWith(path.resolve(uploadDir))) {
+      return res.status(400).json({ error: 'Invalid file path' });
+    }
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'File not found' });
+    }
+
+    if (row.mime_type) {
+      res.type(row.mime_type);
+    }
+    if (row.original_name) {
+      res.setHeader('Content-Disposition', `inline; filename="${path.basename(String(row.original_name))}"`);
+    }
+    return res.sendFile(filePath);
   } catch (err) {
     return next(err);
   }
@@ -241,70 +283,59 @@ const pool = new Pool({
 
 let dbReady = false;
 let excelRebuildInProgress = false;
-const sessions = new Map();
-let sessionStoreWriteTimer = null;
+const redisSessionKeyPrefix = 'auth:session:';
 
 fs.mkdirSync(uploadDir, { recursive: true });
 fs.mkdirSync(path.dirname(gradedReportFilePath), { recursive: true });
 
-function flushSessionsToDisk() {
-  const now = Date.now();
-  const rows = [];
-  for (const [token, session] of sessions.entries()) {
-    if (!token || !session || Number(session.expiresAt || 0) <= now) continue;
-    rows.push({ token, ...session });
-  }
-
-  const payload = {
-    version: 1,
-    generatedAt: new Date(now).toISOString(),
-    sessions: rows,
-  };
-
-  const targetDir = path.dirname(sessionStoreFilePath);
-  fs.mkdirSync(targetDir, { recursive: true });
-  const tmpPath = `${sessionStoreFilePath}.tmp`;
-  fs.writeFileSync(tmpPath, JSON.stringify(payload), 'utf8');
-  fs.renameSync(tmpPath, sessionStoreFilePath);
-}
-
-function scheduleSessionsFlush() {
-  if (sessionStoreWriteTimer) return;
-  sessionStoreWriteTimer = setTimeout(() => {
-    sessionStoreWriteTimer = null;
-    try {
-      flushSessionsToDisk();
-    } catch (_err) {
-      // Best effort persistence; runtime auth should not fail due to local disk write errors.
+async function writeLegacySessionSnapshot() {
+  try {
+    const keys = await redisClient.keys(`${redisSessionKeyPrefix}*`);
+    const now = Date.now();
+    const rows = [];
+    for (const key of keys) {
+      const token = key.slice(redisSessionKeyPrefix.length);
+      const raw = await redisClient.get(key);
+      if (!raw) continue;
+      const parsed = JSON.parse(raw);
+      if (!parsed || Number(parsed.expiresAt || 0) <= now) continue;
+      rows.push({ token, ...parsed });
     }
-  }, 250);
-  if (typeof sessionStoreWriteTimer.unref === 'function') {
-    sessionStoreWriteTimer.unref();
+
+    const payload = {
+      version: 2,
+      generatedAt: new Date(now).toISOString(),
+      sessions: rows,
+    };
+
+    fs.mkdirSync(path.dirname(sessionStoreFilePath), { recursive: true });
+    fs.writeFileSync(sessionStoreFilePath, JSON.stringify(payload), 'utf8');
+  } catch (_err) {
+    // Best effort legacy snapshot to keep existing operational visibility.
   }
 }
 
-function loadSessionsFromDisk() {
+async function restoreLegacySessionSnapshotToRedis() {
   try {
     if (!fs.existsSync(sessionStoreFilePath)) return;
     const raw = fs.readFileSync(sessionStoreFilePath, 'utf8');
     if (!raw.trim()) return;
     const parsed = JSON.parse(raw);
+    const rows = Array.isArray(parsed?.sessions) ? parsed.sessions : [];
     const now = Date.now();
-    const entries = Array.isArray(parsed?.sessions) ? parsed.sessions : [];
-    for (const item of entries) {
-      const token = String(item?.token || '').trim();
-      const expiresAt = Number(item?.expiresAt || 0);
+    for (const row of rows) {
+      const token = String(row?.token || '').trim();
+      const expiresAt = Number(row?.expiresAt || 0);
       if (!token || expiresAt <= now) continue;
-      const restored = { ...item, expiresAt };
-      delete restored.token;
-      sessions.set(token, restored);
+      const ttlSec = Math.max(1, Math.floor((expiresAt - now) / 1000));
+      const payload = { ...row, expiresAt, lastSeenAt: row.lastSeenAt || now };
+      delete payload.token;
+      await redisClient.setEx(`${redisSessionKeyPrefix}${token}`, ttlSec, JSON.stringify(payload));
     }
   } catch (_err) {
-    // Corrupt session snapshots should not block startup.
+    // Legacy snapshot migration should never block startup.
   }
 }
-
-loadSessionsFromDisk();
 
 const sanitize = (name) =>
   name
@@ -345,6 +376,53 @@ function writeFileToStorage(relativeFolder, storedName, buffer) {
 function toUploadsPublicUrl(relativeFolder, storedName) {
   const fileName = encodeURIComponent(path.basename(String(storedName || 'file')));
   return `/api/files/${fileName}`;
+}
+
+function signFileAccessSignature(fileName, exp) {
+  const payload = `${String(fileName || '')}.${Number(exp || 0)}`;
+  return crypto.createHmac('sha256', fileUrlSigningSecret).update(payload).digest('hex');
+}
+
+function verifyFileAccessSignature(fileName, exp, sig) {
+  const expiry = Number(exp || 0);
+  if (!Number.isFinite(expiry) || expiry <= Date.now()) return false;
+  const expected = signFileAccessSignature(fileName, expiry);
+  const left = Buffer.from(String(expected));
+  const right = Buffer.from(String(sig || ''));
+  if (left.length !== right.length) return false;
+  return crypto.timingSafeEqual(left, right);
+}
+
+function createSignedFileUrl(storedName, ttlMs = 5 * 60 * 1000) {
+  const safeName = path.basename(String(storedName || ''));
+  const exp = Date.now() + Math.max(Number(ttlMs || 0), 30 * 1000);
+  const sig = signFileAccessSignature(safeName, exp);
+  return `/api/files/${encodeURIComponent(safeName)}?exp=${exp}&sig=${sig}`;
+}
+
+async function canReadUploadRecord(session, uploadRow) {
+  if (!session || !uploadRow) return false;
+  if (session.role === 'student') {
+    return normalizeRegNo(session.regNo) === normalizeRegNo(uploadRow.owner_reg_no);
+  }
+
+  if (session.role === 'staff') {
+    if (isSuperAdminSession(session)) return true;
+    const subjectId = Number(uploadRow.subject_id);
+    if (!Number.isFinite(subjectId) || subjectId <= 0) return false;
+
+    if (uploadRow.owner_reg_no) {
+      return ensureStaffMappedToStudentForSubject(
+        normalizeStaffEmail(session.email),
+        normalizeRegNo(uploadRow.owner_reg_no),
+        subjectId
+      );
+    }
+
+    return ensureStaffAssignedToSubject(normalizeStaffEmail(session.email), subjectId);
+  }
+
+  return false;
 }
 
 function cleanupUploadDiskCopies(fileNames) {
@@ -397,15 +475,20 @@ async function cleanupOrphanedUploadFiles() {
   const now = Date.now();
   const minAgeMs = retentionDays * 24 * 60 * 60 * 1000;
   const keepNames = new Set();
-  const dbRows = await pool.query('SELECT stored_name FROM uploads WHERE stored_name IS NOT NULL');
+  const dbRows = await pool.query('SELECT id, stored_name FROM uploads WHERE stored_name IS NOT NULL');
+  const dbIdMap = new Map();
   for (const row of dbRows.rows) {
     const name = path.basename(String(row?.stored_name || ''));
-    if (name) keepNames.add(name);
+    if (name) {
+      keepNames.add(name);
+      dbIdMap.set(name, row.id);
+    }
   }
 
   const scannedFiles = listFilesRecursively(uploadDir);
   let deleted = 0;
   const deletedFiles = [];
+  const auditInserts = [];
 
   for (const filePath of scannedFiles) {
     const fileName = path.basename(filePath);
@@ -425,8 +508,26 @@ async function cleanupOrphanedUploadFiles() {
       if (deletedFiles.length < 100) {
         deletedFiles.push(path.relative(uploadDir, filePath).replace(/\\/g, '/'));
       }
+      auditInserts.push([
+        'file_deleted',
+        null,
+        fileName,
+        'orphaned_file_beyond_retention',
+        'system'
+      ]);
     } catch (_err) {
       // Continue cleanup even if one file cannot be deleted.
+    }
+  }
+
+  // Bulk insert audit records
+  if (auditInserts.length > 0) {
+    for (const [action, uploadId, storedName, reason, deletedBy] of auditInserts) {
+      await pool.query(
+        `INSERT INTO cleanup_audit (action, upload_id, stored_name, reason, deleted_by)
+         VALUES ($1, $2, $3, $4, $5)`,
+        [action, uploadId, storedName, reason, deletedBy]
+      );
     }
   }
 
@@ -435,6 +536,7 @@ async function cleanupOrphanedUploadFiles() {
     referenced: keepNames.size,
     deleted,
     retentionDays,
+    auditedAt: new Date().toISOString(),
     deletedFiles,
   };
 }
@@ -470,40 +572,68 @@ function verifyPassword(value, passwordHash) {
   return authUtils.verifyPassword(value, passwordHash);
 }
 
-function createSession(payload) {
+async function createSession(payload) {
   const token = authUtils.createSessionToken();
-  const expiresAt = Date.now() + (Math.max(sessionTtlHours, 1) * 60 * 60 * 1000);
-  sessions.set(token, { ...payload, expiresAt });
-  scheduleSessionsFlush();
+  const now = Date.now();
+  const expiresAt = now + (Math.max(sessionTtlHours, 1) * 60 * 60 * 1000);
+  const ttlSec = Math.max(1, Math.floor((expiresAt - now) / 1000));
+  const sessionPayload = { ...payload, expiresAt, lastSeenAt: now };
+  await redisClient.setEx(`${redisSessionKeyPrefix}${token}`, ttlSec, JSON.stringify(sessionPayload));
+  await writeLegacySessionSnapshot();
   return token;
 }
 
-function getSessionFromRequest(req) {
-  const header = req.header('authorization') || '';
-  const token = header.startsWith('Bearer ') ? header.slice(7).trim() : '';
-  if (!token) return null;
-  const session = sessions.get(token);
-  if (!session) return null;
-  if (session.expiresAt <= Date.now()) {
-    sessions.delete(token);
-    scheduleSessionsFlush();
+async function resolveSessionByToken(token) {
+  const cleanToken = String(token || '').trim();
+  if (!cleanToken) return null;
+  const key = `${redisSessionKeyPrefix}${cleanToken}`;
+  const raw = await redisClient.get(key);
+  if (!raw) return null;
+  const session = JSON.parse(raw);
+  if (!session || Number(session.expiresAt || 0) <= Date.now()) {
+    await redisClient.del(key);
     return null;
   }
-  return { token, ...session };
+
+  const now = Date.now();
+  const absoluteExpiry = Number(session.expiresAt || 0);
+  const idleExpiry = now + (sessionIdleMinutes * 60 * 1000);
+  const nextExpiry = Math.min(absoluteExpiry, idleExpiry);
+  const ttlSec = Math.max(1, Math.floor((nextExpiry - now) / 1000));
+  const refreshed = { ...session, lastSeenAt: now };
+  await redisClient.setEx(key, ttlSec, JSON.stringify(refreshed));
+  return { token: cleanToken, ...refreshed };
+}
+
+function getBearerTokenFromRequest(req) {
+  const header = req.header('authorization') || '';
+  return header.startsWith('Bearer ') ? header.slice(7).trim() : '';
+}
+
+async function getSessionFromRequest(req) {
+  const bearerToken = getBearerTokenFromRequest(req);
+  if (bearerToken) {
+    return resolveSessionByToken(bearerToken);
+  }
+  return null;
 }
 
 function requireAuth(roles) {
   const allowedRoles = Array.isArray(roles) ? roles : [roles];
-  return (req, res, next) => {
-    const session = getSessionFromRequest(req);
-    if (!session) {
-      return res.status(401).json({ error: 'Unauthorized' });
+  return async (req, res, next) => {
+    try {
+      const session = await getSessionFromRequest(req);
+      if (!session) {
+        return res.status(401).json({ error: 'Unauthorized' });
+      }
+      if (allowedRoles.length && !allowedRoles.includes(session.role)) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+      req.auth = session;
+      next();
+    } catch (err) {
+      next(err);
     }
-    if (allowedRoles.length && !allowedRoles.includes(session.role)) {
-      return res.status(403).json({ error: 'Forbidden' });
-    }
-    req.auth = session;
-    next();
   };
 }
 
@@ -512,16 +642,47 @@ function isSuperAdminSession(session) {
   return roleRaw === 'super admin' || roleRaw === 'superadmin';
 }
 
-function requireSuperAdmin(req, res, next) {
-  const session = getSessionFromRequest(req);
-  if (!session) {
-    return res.status(401).json({ error: 'Unauthorized' });
+async function requireSuperAdmin(req, res, next) {
+  try {
+    const session = await getSessionFromRequest(req);
+    if (!session) {
+      return res.status(401).json({ error: 'Unauthorized' });
+    }
+    if (session.role !== 'staff' || !isSuperAdminSession(session)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    req.auth = session;
+    next();
+  } catch (err) {
+    next(err);
   }
-  if (session.role !== 'staff' || !isSuperAdminSession(session)) {
-    return res.status(403).json({ error: 'Forbidden' });
+}
+
+async function loginRateLimitMiddleware(req, res, next) {
+  try {
+    const identifier = String(req.body?.regNo || req.body?.email || req.ip || '').toLowerCase().trim();
+    if (!identifier) {
+      return next();
+    }
+
+    const limiterKey = `login:ratelimit:${identifier}`;
+    const current = await redisClient.incr(limiterKey);
+    if (current === 1) {
+      await redisClient.expire(limiterKey, 15 * 60); // 15-minute window
+    }
+
+    const maxAttempts = 5;
+    if (current > maxAttempts) {
+      return res.status(429).json({
+        error: 'Too many login attempts. Try again in 15 minutes.',
+      });
+    }
+
+    req.loginAttemptCount = current;
+    next();
+  } catch (err) {
+    next(err);
   }
-  req.auth = session;
-  next();
 }
 
 function normalizeRegNo(value) {
@@ -678,11 +839,16 @@ async function upsertStudentQuota(regNo) {
   return { quotaBytes, usedBytes, remainingBytes: Math.max(quotaBytes - usedBytes, 0) };
 }
 
-function getLiveSessionsSnapshot() {
+async function getLiveSessionsSnapshot() {
   const now = Date.now();
+  const keys = await redisClient.keys(`${redisSessionKeyPrefix}*`);
   const rows = [];
-  for (const [token, session] of sessions.entries()) {
-    if (!session || session.expiresAt <= now) continue;
+  for (const key of keys) {
+    const token = key.slice(redisSessionKeyPrefix.length);
+    const raw = await redisClient.get(key);
+    if (!raw) continue;
+    const session = JSON.parse(raw);
+    if (!session || Number(session.expiresAt || 0) <= now) continue;
     rows.push({
       token,
       role: session.role,
@@ -690,7 +856,8 @@ function getLiveSessionsSnapshot() {
       email: session.email || null,
       name: session.name || null,
       expiresAt: session.expiresAt,
-      ttlMs: Math.max(session.expiresAt - now, 0),
+      lastSeenAt: session.lastSeenAt || null,
+      ttlMs: Math.max(Number(session.expiresAt || 0) - now, 0),
     });
   }
   return rows;
@@ -730,17 +897,9 @@ async function restoreTableRows(client, tableName, rows) {
 }
 
 setInterval(() => {
-  const now = Date.now();
-  let changed = false;
-  for (const [token, session] of sessions.entries()) {
-    if (session.expiresAt <= now) {
-      sessions.delete(token);
-      changed = true;
-    }
-  }
-  if (changed) {
-    scheduleSessionsFlush();
-  }
+  writeLegacySessionSnapshot().catch(() => {
+    // Best effort snapshot for debugging visibility.
+  });
 }, 60 * 1000).unref();
 
 app.get('/health', async (_req, res) => {
@@ -752,7 +911,7 @@ app.get('/health', async (_req, res) => {
   }
 });
 
-app.post('/auth/student/login', async (req, res, next) => {
+app.post('/auth/student/login', loginRateLimitMiddleware, async (req, res, next) => {
   try {
     const regNo = String(req.body?.regNo || '').trim().toUpperCase();
     const password = String(req.body?.password || '');
@@ -793,7 +952,14 @@ app.post('/auth/student/login', async (req, res, next) => {
       );
     }
 
-    const token = createSession({ role: 'student', regNo: rowRegNo, name: row.full_name });
+    const token = await createSession({ role: 'student', regNo: rowRegNo, name: row.full_name });
+    // Clear login rate limit on successful auth
+    try {
+      const limiterKey = `login:ratelimit:${String(req.body?.regNo || '').toUpperCase().trim()}`;
+      await redisClient.del(limiterKey);
+    } catch (_rateLimitErr) {
+      // Non-fatal: rate limit cleanup is best-effort
+    }
     res.json({
       token,
       student: { regNo: rowRegNo, name: row.full_name },
@@ -824,7 +990,7 @@ app.post('/auth/student/password', requireAuth('student'), async (req, res, next
   }
 });
 
-app.post('/auth/staff/login', async (req, res, next) => {
+app.post('/auth/staff/login', loginRateLimitMiddleware, async (req, res, next) => {
   try {
     const email = String(req.body?.email || '').trim().toLowerCase();
     const password = String(req.body?.password || '');
@@ -856,7 +1022,14 @@ app.post('/auth/staff/login', async (req, res, next) => {
       );
     }
 
-    const token = createSession({ role: 'staff', staffRole: row.role, roleName: row.role, email: row.email, name: row.full_name });
+    const token = await createSession({ role: 'staff', staffRole: row.role, roleName: row.role, email: row.email, name: row.full_name });
+    // Clear login rate limit on successful auth
+    try {
+      const limiterKey = `login:ratelimit:${String(req.body?.email || '').toLowerCase().trim()}`;
+      await redisClient.del(limiterKey);
+    } catch (_rateLimitErr) {
+      // Non-fatal: rate limit cleanup is best-effort
+    }
     res.json({ token, staff: { email: row.email, name: row.full_name, role: row.role } });
   } catch (err) {
     next(err);
@@ -1717,11 +1890,11 @@ app.post('/staff/materials', requireAuth('staff'), materialUpload.single('file')
     const result = await pool.query(
       `INSERT INTO official_materials (
          subject_id, staff_email, title, description,
-         file_name, file_url, folder_path, mime_type, size_bytes, file_data, is_active
+         file_name, file_url, folder_path, mime_type, size_bytes, is_active
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, TRUE)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, TRUE)
        RETURNING id, subject_id, staff_email, title, description, file_name, file_url, folder_path, mime_type, size_bytes, is_active, created_at, updated_at`,
-      [subjectId, staffEmail, title, description || null, file.originalname, fileUrl, folderPath, file.mimetype, file.size, file.buffer]
+      [subjectId, staffEmail, title, description || null, file.originalname, fileUrl, folderPath, file.mimetype, file.size]
     );
 
     res.status(201).json({ ok: true, material: result.rows[0] });
@@ -1795,7 +1968,9 @@ app.get('/materials/:id/file', requireAuth(['staff', 'student']), async (req, re
     if (!Number.isFinite(id) || id <= 0) return res.status(400).json({ error: 'Invalid material id' });
 
     const result = await pool.query(
-      `SELECT * FROM official_materials WHERE id = $1 AND is_active = TRUE`,
+      `SELECT id, subject_id, file_name, file_url, folder_path, mime_type
+       FROM official_materials
+       WHERE id = $1 AND is_active = TRUE`,
       [id]
     );
     if (!result.rows.length) return res.status(404).json({ error: 'Material not found' });
@@ -1809,9 +1984,16 @@ app.get('/materials/:id/file', requireAuth(['staff', 'student']), async (req, re
       if (!canAccess) return res.status(403).json({ error: 'Forbidden' });
     }
 
+    const storedName = extractUploadFileName(material.file_url || material.file_name);
+    const relativeFolder = String(material.folder_path || '').replace(/^\/+/, '');
+    const filePath = path.resolve(uploadDir, relativeFolder, storedName);
+    if (!filePath.startsWith(path.resolve(uploadDir)) || !fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'Material file not found' });
+    }
+
     if (material.mime_type) res.type(material.mime_type);
     res.setHeader('Content-Disposition', `inline; filename="${path.basename(String(material.file_name || 'material'))}"`);
-    return res.send(material.file_data);
+    return res.sendFile(filePath);
   } catch (err) {
     next(err);
   }
@@ -2313,45 +2495,59 @@ app.post('/staff/qa/threads/:id/reply', requireAuth('staff'), async (req, res, n
   }
 });
 
-app.get('/superadmin/active-users/live', requireSuperAdmin, async (_req, res) => {
-  const live = getLiveSessionsSnapshot();
-  const summary = {
-    total: live.length,
-    students: live.filter((s) => s.role === 'student').length,
-    staff: live.filter((s) => s.role === 'staff').length,
-  };
-  res.json({ summary, sessions: live });
+app.get('/superadmin/active-users/live', requireSuperAdmin, async (_req, res, next) => {
+  try {
+    const live = await getLiveSessionsSnapshot();
+    const summary = {
+      total: live.length,
+      students: live.filter((s) => s.role === 'student').length,
+      staff: live.filter((s) => s.role === 'staff').length,
+    };
+    res.json({ summary, sessions: live });
+  } catch (err) {
+    next(err);
+  }
 });
 
-app.post('/superadmin/active-users/force-logout', requireSuperAdmin, async (req, res) => {
-  const token = String(req.body?.token || '').trim();
-  const userIdentifier = String(req.body?.userIdentifier || '').trim().toLowerCase();
-  if (!token && !userIdentifier) {
-    return res.status(400).json({ error: 'token or userIdentifier is required' });
-  }
-
-  let revoked = 0;
-  for (const [sessionToken, session] of sessions.entries()) {
-    if (token && sessionToken === token) {
-      sessions.delete(sessionToken);
-      revoked += 1;
-      continue;
+app.post('/superadmin/active-users/force-logout', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const token = String(req.body?.token || '').trim();
+    const userIdentifier = String(req.body?.userIdentifier || '').trim().toLowerCase();
+    if (!token && !userIdentifier) {
+      return res.status(400).json({ error: 'token or userIdentifier is required' });
     }
-    if (userIdentifier) {
-      const regNo = String(session?.regNo || '').toLowerCase();
-      const email = String(session?.email || '').toLowerCase();
-      if (regNo === userIdentifier || email === userIdentifier) {
-        sessions.delete(sessionToken);
+
+    let revoked = 0;
+    const keys = await redisClient.keys(`${redisSessionKeyPrefix}*`);
+    for (const key of keys) {
+      const sessionToken = key.slice(redisSessionKeyPrefix.length);
+      const raw = await redisClient.get(key);
+      if (!raw) continue;
+      const session = JSON.parse(raw);
+
+      if (token && sessionToken === token) {
+        await redisClient.del(key);
         revoked += 1;
+        continue;
+      }
+      if (userIdentifier) {
+        const regNo = String(session?.regNo || '').toLowerCase();
+        const email = String(session?.email || '').toLowerCase();
+        if (regNo === userIdentifier || email === userIdentifier) {
+          await redisClient.del(key);
+          revoked += 1;
+        }
       }
     }
-  }
 
-  if (revoked > 0) {
-    scheduleSessionsFlush();
-  }
+    if (revoked > 0) {
+      await writeLegacySessionSnapshot();
+    }
 
-  res.json({ ok: true, revoked });
+    res.json({ ok: true, revoked });
+  } catch (err) {
+    next(err);
+  }
 });
 
 app.post('/superadmin/database/backup', requireSuperAdmin, async (req, res, next) => {
@@ -3661,19 +3857,18 @@ app.post('/upload', requireAuth('student'), upload.array('files', 20), async (re
       for (const file of files) {
         writeFileToStorage(file.folderPath, file.storedName, file.data);
         await client.query(
-          `INSERT INTO uploads (stored_name, original_name, mime_type, size_bytes, file_url, folder_path, file_data, owner_reg_no, upload_kind, subject_id)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          `INSERT INTO uploads (stored_name, original_name, mime_type, size_bytes, file_url, folder_path, owner_reg_no, upload_kind, subject_id)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
            ON CONFLICT (stored_name)
            DO UPDATE SET original_name = EXCLUDED.original_name,
                          mime_type = EXCLUDED.mime_type,
                          size_bytes = EXCLUDED.size_bytes,
                          file_url = EXCLUDED.file_url,
                          folder_path = EXCLUDED.folder_path,
-                         file_data = EXCLUDED.file_data,
                          owner_reg_no = EXCLUDED.owner_reg_no,
                          upload_kind = EXCLUDED.upload_kind,
                          subject_id = EXCLUDED.subject_id`,
-          [file.storedName, file.originalName, file.mimeType, file.size, file.url, file.folderPath, file.data, regNo, file.uploadKind, file.subjectId]
+          [file.storedName, file.originalName, file.mimeType, file.size, file.url, file.folderPath, regNo, file.uploadKind, file.subjectId]
         );
       }
       await client.query('COMMIT');
@@ -3760,7 +3955,7 @@ app.post('/student/ppts', requireAuth('student'), materialUpload.single('file'),
     writeFileToStorage(folderPath, storedName, file.buffer);
 
     await pool.query(
-      `INSERT INTO uploads (stored_name, original_name, mime_type, size_bytes, file_url, folder_path, file_data, owner_reg_no, upload_kind, subject_id)
+      `INSERT INTO uploads (stored_name, original_name, mime_type, size_bytes, file_url, folder_path, owner_reg_no, upload_kind, subject_id)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'student_ppt', $9)
        ON CONFLICT (stored_name)
        DO UPDATE SET original_name = EXCLUDED.original_name,
@@ -3768,11 +3963,10 @@ app.post('/student/ppts', requireAuth('student'), materialUpload.single('file'),
                      size_bytes = EXCLUDED.size_bytes,
                      file_url = EXCLUDED.file_url,
                      folder_path = EXCLUDED.folder_path,
-                     file_data = EXCLUDED.file_data,
                      owner_reg_no = EXCLUDED.owner_reg_no,
                      upload_kind = EXCLUDED.upload_kind,
                      subject_id = EXCLUDED.subject_id`,
-      [storedName, file.originalname, file.mimetype, file.size, fileUrl, folderPath, file.buffer, regNo, subjectId]
+      [storedName, file.originalname, file.mimetype, file.size, fileUrl, folderPath, regNo, subjectId]
     );
 
     const updatedQuota = await upsertStudentQuota(regNo);
@@ -3952,7 +4146,7 @@ app.post('/student/notes', requireAuth('student'), upload.array('files', 20), as
       for (const file of files) {
         writeFileToStorage(file.folderPath, file.storedName, file.data);
         await client.query(
-          `INSERT INTO uploads (stored_name, original_name, mime_type, size_bytes, file_url, folder_path, file_data, owner_reg_no, upload_kind, subject_id)
+          `INSERT INTO uploads (stored_name, original_name, mime_type, size_bytes, file_url, folder_path, owner_reg_no, upload_kind, subject_id)
            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'personal_note', NULL)
            ON CONFLICT (stored_name)
            DO UPDATE SET original_name = EXCLUDED.original_name,
@@ -3960,7 +4154,6 @@ app.post('/student/notes', requireAuth('student'), upload.array('files', 20), as
                          size_bytes = EXCLUDED.size_bytes,
                          file_url = EXCLUDED.file_url,
                          folder_path = EXCLUDED.folder_path,
-                         file_data = EXCLUDED.file_data,
                          owner_reg_no = EXCLUDED.owner_reg_no,
                          upload_kind = EXCLUDED.upload_kind,
                          subject_id = EXCLUDED.subject_id`,
@@ -4200,13 +4393,10 @@ async function ensureSchema() {
       mime_type TEXT,
       size_bytes BIGINT,
       file_url TEXT NOT NULL,
-      file_data BYTEA,
       owner_reg_no TEXT REFERENCES students(reg_no) ON DELETE SET NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `);
-
-  await pool.query('ALTER TABLE uploads ADD COLUMN IF NOT EXISTS file_data BYTEA');
   await pool.query('ALTER TABLE uploads ADD COLUMN IF NOT EXISTS owner_reg_no TEXT');
   await pool.query('ALTER TABLE uploads ADD COLUMN IF NOT EXISTS folder_path TEXT');
   await pool.query("ALTER TABLE uploads ADD COLUMN IF NOT EXISTS upload_kind TEXT NOT NULL DEFAULT 'submission'");
@@ -4329,6 +4519,21 @@ async function ensureSchema() {
   await pool.query('CREATE INDEX IF NOT EXISTS idx_qa_threads_staff_email ON qa_threads(staff_email)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_qa_threads_reg_no ON qa_threads(reg_no)');
   await pool.query('CREATE INDEX IF NOT EXISTS idx_qa_messages_thread_id ON qa_messages(thread_id)');
+
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS cleanup_audit (
+      id BIGSERIAL PRIMARY KEY,
+      action TEXT NOT NULL,
+      upload_id BIGINT,
+      stored_name TEXT,
+      reason TEXT,
+      deleted_by TEXT NOT NULL DEFAULT 'system',
+      deleted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_cleanup_audit_deleted_at ON cleanup_audit(deleted_at DESC)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_cleanup_audit_upload_id ON cleanup_audit(upload_id)');
 
   await pool.query(`
     CREATE TABLE IF NOT EXISTS system_backups (
@@ -4666,6 +4871,12 @@ app.use((err, _req, res, _next) => {
 });
 
 async function bootstrap() {
+  redisClient.on('error', (err) => {
+    console.error('Redis client error:', err.message || err);
+  });
+  await redisClient.connect();
+  await restoreLegacySessionSnapshotToRedis();
+
   await ensureSchema();
   await ensureDefaultSubject();
   await syncStudentsOnApiStartup();

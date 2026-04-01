@@ -4,14 +4,17 @@
   "private": true,
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node __tests__/auth.integration.test.js"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "exceljs": "^4.4.0",
     "express": "4.21.2",
+    "helmet": "^7.1.0",
     "multer": "2.0.2",
     "pg": "8.13.3",
+    "redis": "^4.6.11",
     "xlsx": "0.18.5"
   }
 }

@@ -6,25 +6,36 @@ function resolveImageUrl(src) {
   const raw = String(candidate || '').trim();
   if (!raw) return '';
   if (/^(data:|blob:)/i.test(raw)) return raw;
-  if (raw.startsWith('/api/uploads/')) return raw;
-  if (raw.startsWith('/uploads/')) return `/api${raw}`;
-  if (raw.startsWith('uploads/')) return `/api/${raw}`;
-  if (/^[a-zA-Z]:[\\/]/.test(raw) || raw.includes('\\')) {
+
+  let normalized = raw;
+  if (raw.startsWith('/api/uploads/')) {
+    normalized = `/api/files/${raw.slice('/api/uploads/'.length).replace(/^\/+/, '')}`;
+  } else if (raw.startsWith('/uploads/')) {
+    normalized = `/api/files/${raw.slice('/uploads/'.length).replace(/^\/+/, '')}`;
+  } else if (raw.startsWith('uploads/')) {
+    normalized = `/api/files/${raw.slice('uploads/'.length).replace(/^\/+/, '')}`;
+  } else if (/^[a-zA-Z]:[\\/]/.test(raw) || raw.includes('\\')) {
     const name = raw.split(/[/\\]/).pop();
-    return name ? `/api/uploads/${name}` : '';
-  }
-  if (/^https?:\/\//i.test(raw)) {
+    normalized = name ? `/api/files/${name}` : '';
+  } else if (/^https?:\/\//i.test(raw)) {
     try {
       const u = new URL(raw);
-      const idx = u.pathname.toLowerCase().lastIndexOf('/uploads/');
+      const idx = u.pathname.toLowerCase().lastIndexOf('/files/');
+      const uploadIdx = u.pathname.toLowerCase().lastIndexOf('/uploads/');
       if (idx >= 0) {
-        return `/api/uploads/${u.pathname.slice(idx + '/uploads/'.length).replace(/^\/+/, '')}`;
+        normalized = `/api/files/${u.pathname.slice(idx + '/files/'.length).replace(/^\/+/, '')}`;
+      } else if (uploadIdx >= 0) {
+        normalized = `/api/files/${u.pathname.slice(uploadIdx + '/uploads/'.length).replace(/^\/+/, '')}`;
       }
     } catch (_err) {
-      // ignore
+      normalized = raw;
     }
   }
-  return raw;
+
+  if (!normalized.startsWith('/api/files/')) return normalized;
+  const token = getStudentSession()?.token || '';
+  if (!token) return normalized;
+  return `${normalized}${normalized.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
 }
 // ── Auth guard (runs BEFORE DOMContentLoaded) ─────────────────
 // students-db.js must be loaded before this file
@@ -189,13 +200,26 @@ async function loadSubjectDropdown() {
       const sideItem = document.createElement('div');
       sideItem.className = 'sidebar-item';
       sideItem.dataset.id = id;
-      sideItem.innerHTML = `
-        <div class="item-icon">📘</div>
-        <div class="item-info">
-          <div style="font-size:0.85rem; font-weight:800; color:var(--text);">${code}</div>
-          <div style="font-size:0.75rem; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:180px;">${name}</div>
-        </div>
-      `;
+      
+      const iconDiv = document.createElement('div');
+      iconDiv.className = 'item-icon';
+      iconDiv.textContent = '📘';
+      sideItem.appendChild(iconDiv);
+      
+      const infoDiv = document.createElement('div');
+      infoDiv.className = 'item-info';
+      
+      const codeDiv = document.createElement('div');
+      codeDiv.style.cssText = 'font-size:0.85rem; font-weight:800; color:var(--text);';
+      codeDiv.textContent = code;
+      infoDiv.appendChild(codeDiv);
+      
+      const nameDiv = document.createElement('div');
+      nameDiv.style.cssText = 'font-size:0.75rem; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:180px;';
+      nameDiv.textContent = name;
+      infoDiv.appendChild(nameDiv);
+      
+      sideItem.appendChild(infoDiv);
       sideItem.addEventListener('click', () => selectSubject(id));
       sidebarList.appendChild(sideItem);
     });
