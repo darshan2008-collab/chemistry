@@ -78,17 +78,15 @@ services:
     restart: unless-stopped
     command: >
       sh -c "
-      echo \"${CLEANUP_SCHEDULE} find /data/uploads -type f -mtime +${RETENTION_DAYS} -print -delete >/proc/1/fd/1 2>/proc/1/fd/2\" > /etc/crontabs/root &&
+      echo \"${CLEANUP_SCHEDULE} wget -qO- --header='x-resync-token: ${RESYNC_TOKEN}' --post-data='' http://chemtest-api:${API_PORT}/internal/cleanup/uploads >/proc/1/fd/1 2>/proc/1/fd/2\" > /etc/crontabs/root &&
       crond -f -l 8
       "
     environment:
       TZ: ${TZ}
+      API_PORT: ${API_PORT}
+      RESYNC_TOKEN: ${RESYNC_TOKEN}
       RETENTION_DAYS: ${RETENTION_DAYS}
       CLEANUP_SCHEDULE: ${CLEANUP_SCHEDULE}
-    volumes:
-      - type: bind
-        source: ${UPLOADS_ROOT}
-        target: /data/uploads
     healthcheck:
       test: ["CMD-SHELL", "pgrep crond >/dev/null || exit 1"]
       interval: 30s

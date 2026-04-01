@@ -22,6 +22,7 @@ const uhvAssignmentsOnStartup = String(process.env.UHV_ASSIGNMENTS_ON_STARTUP ||
 const resyncToken = process.env.RESYNC_TOKEN || '';
 const authPepper = requiredEnv('AUTH_PEPPER');
 const sessionTtlHours = Number(process.env.AUTH_SESSION_TTL_HOURS || 24);
+const retentionDays = Math.max(Number(process.env.RETENTION_DAYS || 90), 1);
 const studentQuotaBytesDefault = Number(process.env.STUDENT_QUOTA_BYTES || 500 * 1024 * 1024);
 const passwordHashRounds = Math.max(Number(process.env.PASSWORD_HASH_ROUNDS || 12), 10);
 
@@ -357,6 +358,83 @@ function cleanupUploadDiskCopies(fileNames) {
       // Best effort: uploads are persisted in DB; disk cleanup failure should not fail request.
     }
   }
+}
+
+function listFilesRecursively(baseDir) {
+  const rows = [];
+  if (!fs.existsSync(baseDir)) return rows;
+  const stack = [baseDir];
+  while (stack.length) {
+    const current = stack.pop();
+    let entries = [];
+    try {
+      entries = fs.readdirSync(current, { withFileTypes: true });
+    } catch (_err) {
+      continue;
+    }
+    for (const entry of entries) {
+      const absolutePath = path.join(current, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(absolutePath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      rows.push(absolutePath);
+    }
+  }
+  return rows;
+}
+
+function isInternalTokenAuthorized(req) {
+  const provided = String(req.header('x-resync-token') || '').trim();
+  if (!resyncToken) return false;
+  return provided === resyncToken;
+}
+
+async function cleanupOrphanedUploadFiles() {
+  const now = Date.now();
+  const minAgeMs = retentionDays * 24 * 60 * 60 * 1000;
+  const keepNames = new Set();
+  const dbRows = await pool.query('SELECT stored_name FROM uploads WHERE stored_name IS NOT NULL');
+  for (const row of dbRows.rows) {
+    const name = path.basename(String(row?.stored_name || ''));
+    if (name) keepNames.add(name);
+  }
+
+  const scannedFiles = listFilesRecursively(uploadDir);
+  let deleted = 0;
+  const deletedFiles = [];
+
+  for (const filePath of scannedFiles) {
+    const fileName = path.basename(filePath);
+    if (fileName === path.basename(sessionStoreFilePath)) continue;
+    if (keepNames.has(fileName)) continue;
+    let stat = null;
+    try {
+      stat = fs.statSync(filePath);
+    } catch (_err) {
+      continue;
+    }
+    if (!stat || !stat.isFile()) continue;
+    if ((now - Number(stat.mtimeMs || 0)) < minAgeMs) continue;
+    try {
+      fs.unlinkSync(filePath);
+      deleted += 1;
+      if (deletedFiles.length < 100) {
+        deletedFiles.push(path.relative(uploadDir, filePath).replace(/\\/g, '/'));
+      }
+    } catch (_err) {
+      // Continue cleanup even if one file cannot be deleted.
+    }
+  }
+
+  return {
+    scanned: scannedFiles.length,
+    referenced: keepNames.size,
+    deleted,
+    retentionDays,
+    deletedFiles,
+  };
 }
 
 const upload = multer({
@@ -4635,4 +4713,17 @@ pool.on('error', (err) => {
 bootstrap().catch((err) => {
   console.error('Fatal startup error:', err);
   process.exit(1);
+});
+
+app.post('/internal/cleanup/uploads', async (req, res, next) => {
+  try {
+    if (!isInternalTokenAuthorized(req)) {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    const result = await cleanupOrphanedUploadFiles();
+    res.json({ ok: true, ...result, at: new Date().toISOString() });
+  } catch (err) {
+    next(err);
+  }
 });
