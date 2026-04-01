@@ -13,6 +13,7 @@ const port = Number(process.env.API_PORT || 3000);
 const uploadDir = process.env.UPLOAD_DIR || (process.platform === 'win32'
   ? path.join(process.cwd(), 'data', 'uploads')
   : '/data/uploads');
+const sessionStoreFilePath = process.env.AUTH_SESSION_STORE_FILE || path.join(uploadDir, '.auth-sessions.json');
 const gradedReportFilePath = process.env.GRADED_REPORT_FILE || path.join(uploadDir, 'graded-report.xlsx');
 const studentsFile = process.env.STUDENTS_FILE || '/app/students-db.js';
 const syncStudentsOnStartup = String(process.env.STUDENTS_SYNC_ON_STARTUP || 'true').trim().toLowerCase() !== 'false';
@@ -238,9 +239,69 @@ const pool = new Pool({
 let dbReady = false;
 let excelRebuildInProgress = false;
 const sessions = new Map();
+let sessionStoreWriteTimer = null;
 
 fs.mkdirSync(uploadDir, { recursive: true });
 fs.mkdirSync(path.dirname(gradedReportFilePath), { recursive: true });
+
+function flushSessionsToDisk() {
+  const now = Date.now();
+  const rows = [];
+  for (const [token, session] of sessions.entries()) {
+    if (!token || !session || Number(session.expiresAt || 0) <= now) continue;
+    rows.push({ token, ...session });
+  }
+
+  const payload = {
+    version: 1,
+    generatedAt: new Date(now).toISOString(),
+    sessions: rows,
+  };
+
+  const targetDir = path.dirname(sessionStoreFilePath);
+  fs.mkdirSync(targetDir, { recursive: true });
+  const tmpPath = `${sessionStoreFilePath}.tmp`;
+  fs.writeFileSync(tmpPath, JSON.stringify(payload), 'utf8');
+  fs.renameSync(tmpPath, sessionStoreFilePath);
+}
+
+function scheduleSessionsFlush() {
+  if (sessionStoreWriteTimer) return;
+  sessionStoreWriteTimer = setTimeout(() => {
+    sessionStoreWriteTimer = null;
+    try {
+      flushSessionsToDisk();
+    } catch (_err) {
+      // Best effort persistence; runtime auth should not fail due to local disk write errors.
+    }
+  }, 250);
+  if (typeof sessionStoreWriteTimer.unref === 'function') {
+    sessionStoreWriteTimer.unref();
+  }
+}
+
+function loadSessionsFromDisk() {
+  try {
+    if (!fs.existsSync(sessionStoreFilePath)) return;
+    const raw = fs.readFileSync(sessionStoreFilePath, 'utf8');
+    if (!raw.trim()) return;
+    const parsed = JSON.parse(raw);
+    const now = Date.now();
+    const entries = Array.isArray(parsed?.sessions) ? parsed.sessions : [];
+    for (const item of entries) {
+      const token = String(item?.token || '').trim();
+      const expiresAt = Number(item?.expiresAt || 0);
+      if (!token || expiresAt <= now) continue;
+      const restored = { ...item, expiresAt };
+      delete restored.token;
+      sessions.set(token, restored);
+    }
+  } catch (_err) {
+    // Corrupt session snapshots should not block startup.
+  }
+}
+
+loadSessionsFromDisk();
 
 const sanitize = (name) =>
   name
@@ -345,6 +406,7 @@ function createSession(payload) {
   const token = crypto.randomBytes(32).toString('hex');
   const expiresAt = Date.now() + (Math.max(sessionTtlHours, 1) * 60 * 60 * 1000);
   sessions.set(token, { ...payload, expiresAt });
+  scheduleSessionsFlush();
   return token;
 }
 
@@ -356,6 +418,7 @@ function getSessionFromRequest(req) {
   if (!session) return null;
   if (session.expiresAt <= Date.now()) {
     sessions.delete(token);
+    scheduleSessionsFlush();
     return null;
   }
   return { token, ...session };
@@ -600,8 +663,15 @@ async function restoreTableRows(client, tableName, rows) {
 
 setInterval(() => {
   const now = Date.now();
+  let changed = false;
   for (const [token, session] of sessions.entries()) {
-    if (session.expiresAt <= now) sessions.delete(token);
+    if (session.expiresAt <= now) {
+      sessions.delete(token);
+      changed = true;
+    }
+  }
+  if (changed) {
+    scheduleSessionsFlush();
   }
 }, 60 * 1000).unref();
 
@@ -2207,6 +2277,10 @@ app.post('/superadmin/active-users/force-logout', requireSuperAdmin, async (req,
         revoked += 1;
       }
     }
+  }
+
+  if (revoked > 0) {
+    scheduleSessionsFlush();
   }
 
   res.json({ ok: true, revoked });
