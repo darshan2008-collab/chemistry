@@ -63,9 +63,9 @@
         </svg>
       </div>
       <span
-        style="font-size: 1.15rem; font-weight: 800; background: linear-gradient(135deg, #ffffff 10%, #00d4aa 50%, #6c63ff 100%); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; text-shadow: 0 0 20px rgba(0, 212, 170, 0.4); letter-spacing: -0.3px;">
+        style="font-size: 1.15rem; font-weight: 800; background: linear-gradient(135deg, #ffffff 10%, #00d4aa 50%, #6c63ff 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; text-shadow: 0 0 20px rgba(0, 212, 170, 0.4); letter-spacing: -0.3px;">
         Unitest <strong
-          style="color: #6c63ff; -webkit-text-fill-color: #6c63ff; font-weight: 900; background: none; -webkit-background-clip: border-box; text-shadow: 0 0 15px rgba(108, 99, 255, 0.6);">Portal</strong>
+          style="color: #6c63ff; -webkit-text-fill-color: #6c63ff; font-weight: 900; background: none; -webkit-background-clip: border-box; background-clip: border-box; text-shadow: 0 0 15px rgba(108, 99, 255, 0.6);">Portal</strong>
       </span>
     </div>
     <div class="nav-right">
@@ -94,21 +94,35 @@
     </div>
   </nav>
 
-  <!-- Hero -->
-  <header class="hero">
-    <div class="hero-badge">📚 Home Test Submission</div>
-    <h1 class="hero-title">Upload Your<br /><span class="gradient-text">Home Test</span></h1>
-    <p class="hero-sub">Take a clear photo of your answer sheet and submit it below. Your teacher will review and give
-      you marks & feedback.</p>
-    <div class="hero-stats">
-      <div class="stat"><span class="stat-num" id="totalSubmissions">0</span><span class="stat-label">Submissions</span>
+  <!-- Layout Wrapper -->
+  <div class="layout-wrapper">
+    <!-- Side Menu Bar -->
+    <aside class="sidebar-nav" id="sidebarNav">
+      <div class="sidebar-header">
+        <div class="sidebar-icon">📚</div>
+        <span>My Subjects</span>
       </div>
-      <div class="stat-divider"></div>
-      <div class="stat"><span class="stat-num" id="gradedCount">0</span><span class="stat-label">Graded</span></div>
-      <div class="stat-divider"></div>
-      <div class="stat"><span class="stat-num" id="pendingCount">0</span><span class="stat-label">Pending</span></div>
-    </div>
-  </header>
+      <div class="sidebar-list" id="subjectSidebarList">
+        <div class="sidebar-loading">Loading...</div>
+      </div>
+    </aside>
+
+    <div class="main-content-flow">
+      <!-- Hero -->
+      <header class="hero">
+        <div class="hero-badge">📚 Home Test Submission</div>
+        <h1 class="hero-title">Upload Your<br /><span class="gradient-text">Home Test</span></h1>
+        <p class="hero-sub">Take a clear photo of your answer sheet and submit it below. Your teacher will review and give
+          you marks & feedback.</p>
+        <div class="hero-stats">
+          <div class="stat"><span class="stat-num" id="totalSubmissions">0</span><span class="stat-label">Submissions</span>
+          </div>
+          <div class="stat-divider"></div>
+          <div class="stat"><span class="stat-num" id="gradedCount">0</span><span class="stat-label">Graded</span></div>
+          <div class="stat-divider"></div>
+          <div class="stat"><span class="stat-num" id="pendingCount">0</span><span class="stat-label">Pending</span></div>
+        </div>
+      </header>
 
   <!-- Main Form -->
   <main class="container">
@@ -318,9 +332,12 @@
     <img id="lightboxImg" src="" alt="Full size" />
   </div>
 
-  <footer class="footer">
-    <p>© 2026 Unitest Portal · <span class="team-unitary-x">Designed and Powered by Team Unitary X</span></p>
-  </footer>
+      <!-- Footer is part of the flow -->
+      <footer class="footer">
+        <p>© 2026 Unitest Portal · <span class="team-unitary-x">Designed and Powered by Team Unitary X</span></p>
+      </footer>
+    </div> <!-- .main-content-flow -->
+  </div> <!-- .layout-wrapper -->
 
   <script src="students-db.js"></script>
   <script src="student.js"></script>

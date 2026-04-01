@@ -125,19 +125,36 @@ document.addEventListener('DOMContentLoaded', async () => {
   prefillStudentFields();
   initParticles();
   await loadSubjectDropdown();       // ← populate subject selector
+  // Stats
   await updateStats();
   initDropZone();
   initForm();
+  
+  // Sync sidebar when dropdown changes
+  const subjectSelect = document.getElementById('subjectSelect');
+  if (subjectSelect) {
+    subjectSelect.addEventListener('change', () => {
+      const val = subjectSelect.value;
+      document.querySelectorAll('.sidebar-item').forEach(item => {
+        item.classList.toggle('active', item.dataset.id === val);
+      });
+    });
+  }
+
   await loadMyResults();
   initStudentCommsPanel();
   initStudentPersonalNotesPanel();
+  initStudentPptPanel();
   initLightbox();
 });
 
 // ── Subject dropdown loader ────────────────────────────────────
+// ── Subject loader (Sidebar & Dropdown) ───────────────────────
 async function loadSubjectDropdown() {
   const select = document.getElementById('subjectSelect');
-  if (!select) return;
+  const sidebarList = document.getElementById('subjectSidebarList');
+  if (!select || !sidebarList) return;
+
   try {
     const token = getStudentAuthTokenOrThrow();
     const res = await fetch('/api/subjects', {
@@ -145,25 +162,75 @@ async function loadSubjectDropdown() {
     });
     if (!res.ok) throw new Error('Failed to load subjects');
     const { subjects } = await res.json();
+    
+    // Clear existing
     select.innerHTML = '<option value="" disabled selected>Select subject</option>';
-    (subjects || []).forEach(s => {
-      const opt = document.createElement('option');
-      opt.value = String(s.id);          // numeric DB id as value
-      opt.dataset.code = s.code;         // keep code for display
-      opt.textContent = s.name;
-      select.appendChild(opt);
-    });
+    sidebarList.innerHTML = '';
+
     if (!subjects || subjects.length === 0) {
       select.innerHTML = '<option value="" disabled selected>No subjects available</option>';
+      sidebarList.innerHTML = '<div class="sidebar-loading">No subjects assigned yet</div>';
+      return;
     }
+
+    subjects.forEach(s => {
+      const id = String(s.id);
+      const name = String(s.name || '');
+      const code = String(s.code || '');
+
+      // 1. Populate Dropdown
+      const opt = document.createElement('option');
+      opt.value = id;
+      opt.dataset.code = code;
+      opt.textContent = `${code} - ${name}`;
+      select.appendChild(opt);
+
+      // 2. Populate Sidebar
+      const sideItem = document.createElement('div');
+      sideItem.className = 'sidebar-item';
+      sideItem.dataset.id = id;
+      sideItem.innerHTML = `
+        <div class="item-icon">📘</div>
+        <div class="item-info">
+          <div style="font-size:0.85rem; font-weight:800; color:var(--text);">${code}</div>
+          <div style="font-size:0.75rem; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:180px;">${name}</div>
+        </div>
+      `;
+      sideItem.addEventListener('click', () => selectSubject(id));
+      sidebarList.appendChild(sideItem);
+    });
+
   } catch (err) {
-    console.warn('[SUBJECTS] Failed to load, using static fallback:', err.message);
-    // static fallback so the form is always usable
-    select.innerHTML = `
-      <option value="" disabled selected>Select subject</option>
-      <option value="chemistry_fallback" data-code="CHEMISTRY">Chemistry</option>
-      <option value="uhv_fallback" data-code="UHV">UHV</option>
-    `;
+    console.error('[SUBJECTS] Failed to load subjects:', err);
+    select.innerHTML = '<option value="" disabled selected>Error loading subjects</option>';
+    sidebarList.innerHTML = '<div class="sidebar-loading" style="color:#ffb8c7;">Failed to load subjects</div>';
+  }
+}
+
+// Helper to sync selection
+function selectSubject(id) {
+  const select = document.getElementById('subjectSelect');
+  if (select) {
+    select.value = id;
+    // Trigger any change listeners
+    select.dispatchEvent(new Event('change'));
+  }
+  
+  // Highlight sidebar
+  document.querySelectorAll('.sidebar-item').forEach(item => {
+    item.classList.toggle('active', item.dataset.id === id);
+  });
+  
+  // Visual feedback - highlight the form briefly
+  const card = document.getElementById('uploadSection');
+  if (card) {
+    card.style.borderColor = 'var(--primary)';
+    setTimeout(() => { card.style.borderColor = ''; }, 600);
+  }
+
+  // Auto-scroll on mobile if needed
+  if (window.innerWidth < 850) {
+    card.scrollIntoView({ behavior: 'smooth', block: 'start' });
   }
 }
 
@@ -673,6 +740,165 @@ function initStudentPersonalNotesPanel() {
   });
 
   refreshNotes();
+}
+
+function initStudentPptPanel() {
+  const host = document.getElementById('resultsSection');
+  if (!host || !host.parentNode) return;
+
+  const panel = document.createElement('section');
+  panel.className = 'glass-card results-card';
+  panel.style.marginTop = '18px';
+  panel.innerHTML = `
+    <div class="card-header">
+      <div class="card-icon">📽️</div>
+      <div>
+        <h2>Subject PPT Upload</h2>
+        <p>Upload PPT/PPTX for a selected subject (e.g. UHV, Chemistry)</p>
+      </div>
+      <button type="button" class="nav-pass-btn" id="studentPptRefreshBtn" style="margin-left:auto;">Refresh</button>
+    </div>
+    <div style="display:grid;gap:12px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));">
+      <form id="studentPptUploadForm" style="display:grid;gap:8px;">
+        <select id="studentPptSubject" style="padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.03);color:inherit;" required>
+          <option value="">Loading subjects...</option>
+        </select>
+        <input id="studentPptTitle" placeholder="PPT title (optional)" style="padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.03);color:inherit;" />
+        <input id="studentPptFile" type="file" accept=".ppt,.pptx,application/vnd.ms-powerpoint,application/vnd.openxmlformats-officedocument.presentationml.presentation" style="padding:10px;border-radius:10px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.03);color:inherit;" required />
+        <button type="submit" class="submit-btn" style="padding:10px 14px;">Upload PPT</button>
+        <p id="studentPptMsg" style="margin:0;font-size:0.82rem;color:var(--text-muted);"></p>
+      </form>
+      <div>
+        <h3 style="font-size:1rem;margin:0 0 8px;">My Uploaded PPTs</h3>
+        <div id="studentPptList" style="display:grid;gap:8px;max-height:320px;overflow:auto;"></div>
+      </div>
+    </div>
+  `;
+
+  host.parentNode.insertBefore(panel, host.nextSibling);
+
+  const subjectSelect = panel.querySelector('#studentPptSubject');
+  const fileInput = panel.querySelector('#studentPptFile');
+  const titleInput = panel.querySelector('#studentPptTitle');
+  const list = panel.querySelector('#studentPptList');
+  const msg = panel.querySelector('#studentPptMsg');
+
+  async function loadSubjects() {
+    subjectSelect.innerHTML = '<option value="">Loading subjects...</option>';
+    try {
+      const payload = await studentApiJson('/api/student/subjects');
+      const subjects = payload.subjects || [];
+      if (!subjects.length) {
+        subjectSelect.innerHTML = '<option value="">No assigned subjects</option>';
+        return;
+      }
+      subjectSelect.innerHTML = subjects
+        .map((s) => `<option value="${escapeHtml(String(s.id || ''))}">${escapeHtml(`${String(s.code || '').trim()} - ${String(s.name || '').trim()}`)}</option>`)
+        .join('');
+    } catch (err) {
+      subjectSelect.innerHTML = '<option value="">Failed to load subjects</option>';
+      msg.style.color = '#ffb8c7';
+      msg.textContent = err.message || 'Failed to load subjects';
+    }
+  }
+
+  async function refreshPptList() {
+    const subjectId = Number(String(subjectSelect.value || '').trim());
+    const qs = Number.isFinite(subjectId) && subjectId > 0
+      ? `?subjectId=${encodeURIComponent(subjectId)}`
+      : '';
+    list.innerHTML = 'Loading...';
+    try {
+      const payload = await studentApiJson(`/api/student/ppts${qs}`);
+      const rows = payload.ppts || [];
+      if (!rows.length) {
+        list.innerHTML = '<div class="empty-state"><p>No PPT uploads yet.</p></div>';
+        return;
+      }
+      list.innerHTML = rows.map((row) => {
+        const openUrl = String(row.file_url || '').trim() || '#';
+        return `
+          <div class="result-item">
+            <div class="result-header">
+              <div class="result-title">${escapeHtml(row.original_name || 'PPT')}</div>
+              <span class="status-badge status-review">${escapeHtml(formatBytes(row.size_bytes || 0))}</span>
+            </div>
+            <div class="result-subtitle">${escapeHtml(String(row.subject_code || ''))} · ${escapeHtml(new Date(row.created_at).toLocaleString())}</div>
+            <div class="result-actions" style="margin-top:8px;">
+              <a class="result-edit-btn" href="${escapeHtml(openUrl)}" target="_blank" rel="noopener">Open PPT</a>
+            </div>
+          </div>
+        `;
+      }).join('');
+    } catch (err) {
+      list.innerHTML = `<div class="empty-state"><p style="color:#ffb8c7;">${escapeHtml(err.message || 'Failed to load PPT uploads')}</p></div>`;
+    }
+  }
+
+  panel.querySelector('#studentPptUploadForm').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const subjectId = Number(String(subjectSelect.value || '').trim());
+    const file = fileInput.files?.[0];
+    const title = String(titleInput.value || '').trim();
+
+    if (!Number.isFinite(subjectId) || subjectId <= 0 || !file) {
+      msg.style.color = '#ffb8c7';
+      msg.textContent = 'Select subject and choose a PPT file.';
+      return;
+    }
+
+    const lower = String(file.name || '').toLowerCase();
+    if (!(lower.endsWith('.ppt') || lower.endsWith('.pptx'))) {
+      msg.style.color = '#ffb8c7';
+      msg.textContent = 'Only .ppt or .pptx files are allowed.';
+      return;
+    }
+
+    try {
+      const token = getStudentAuthTokenOrThrow();
+      const formData = new FormData();
+      formData.append('subjectId', String(subjectId));
+      if (title) formData.append('title', title);
+      formData.append('file', file);
+
+      const res = await fetch('/api/student/ppts', {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+        body: formData,
+      });
+      const payload = await res.json().catch(() => ({}));
+
+      if (res.status === 401) {
+        handleStudentAuthExpired();
+        throw new Error('Unauthorized');
+      }
+      if (!res.ok) {
+        throw new Error(payload?.error || `Upload failed (${res.status})`);
+      }
+
+      msg.style.color = '#9de9ff';
+      msg.textContent = `Uploaded: ${payload?.ppt?.originalName || file.name}`;
+      showToast('PPT uploaded successfully', 'success');
+      fileInput.value = '';
+      titleInput.value = '';
+      await refreshPptList();
+    } catch (err) {
+      msg.style.color = '#ffb8c7';
+      msg.textContent = err.message || 'Failed to upload PPT';
+    }
+  });
+
+  subjectSelect.addEventListener('change', refreshPptList);
+
+  panel.querySelector('#studentPptRefreshBtn').addEventListener('click', async () => {
+    await refreshPptList();
+    showToast('PPT list refreshed', 'info');
+  });
+
+  (async () => {
+    await loadSubjects();
+    await refreshPptList();
+  })();
 }
 
 // ── Navbar ────────────────────────────────────────────────────
@@ -1195,8 +1421,15 @@ async function handleSubmit(e) {
     hideUploadProgress();
     const errorMsg = err.message || 'Unknown error';
     console.error('[SUBMIT-ERROR] Full error:', err);
-    const displayMsg = `❌ Upload failed: ${errorMsg}`.substring(0, 80);
-    showToast(displayMsg, 'error');
+    
+    let displayMsg = `❌ Upload failed: ${errorMsg}`;
+    if (errorMsg.includes('assigned to this subject')) {
+      displayMsg = '⚠️ You are not assigned to this subject. Please contact your teacher.';
+    } else if (errorMsg.includes('403')) {
+       displayMsg = '⚠️ Access Forbidden. Check subject assignment.';
+    }
+    
+    showToast(displayMsg.substring(0, 100), 'error');
   } finally {
     setTimeout(hideUploadProgress, 800);
     if (btn) btn.disabled = false;

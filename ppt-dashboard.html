@@ -1,0 +1,45 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PPT Dashboard</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="ppt-dashboard.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>Student PPT Uploads</h1>
+      <p id="staffMeta">Loading staff profile...</p>
+    </div>
+    <div class="top-actions">
+      <a class="btn ghost" href="staff-dashboard.html">Open Full Staff Dashboard</a>
+      <button class="btn" id="logoutBtn" type="button">Logout</button>
+    </div>
+  </header>
+
+  <main class="page">
+    <section class="filters">
+      <label for="subjectFilter">Subject</label>
+      <select id="subjectFilter">
+        <option value="">All Assigned Subjects</option>
+      </select>
+      <button class="btn" id="refreshBtn" type="button">Refresh</button>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>Subject-wise PPT List</h2>
+        <p id="summary">Loading uploads...</p>
+      </div>
+      <div id="pptGroups" class="groups"></div>
+      <p id="errorMsg" class="error" role="alert" aria-live="polite"></p>
+    </section>
+  </main>
+
+  <script src="ppt-dashboard.js"></script>
+</body>
+</html>

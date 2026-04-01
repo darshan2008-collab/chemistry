@@ -323,16 +323,168 @@ body {
   background: var(--glass-border);
 }
 
-/* ── Layout ─────────────────────────────────────────────────── */
+/* ── Layout Wrapper ─────────────────────────────────────────── */
+.layout-wrapper {
+  display: flex;
+  min-height: calc(100vh - 72px);
+  margin-top: 72px; /* Navbar height */
+  position: relative;
+  z-index: 1;
+}
+
+/* ── Sidebar Nav ────────────────────────────────────────────── */
+.sidebar-nav {
+  width: 300px;
+  background: rgba(5, 5, 12, 0.3);
+  backdrop-filter: blur(40px);
+  border-right: 1px solid var(--glass-border);
+  padding: 40px 24px;
+  position: sticky;
+  top: 72px;
+  height: calc(100vh - 72px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+  flex-shrink: 0;
+  transition: var(--transition);
+}
+
+/* Custom Scrollbar for Sidebar */
+.sidebar-nav::-webkit-scrollbar {
+  width: 4px;
+}
+.sidebar-nav::-webkit-scrollbar-thumb {
+  background: rgba(108, 99, 255, 0.2);
+  border-radius: 10px;
+}
+
+.sidebar-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 0.85rem;
+  font-weight: 800;
+  color: var(--primary-light);
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  padding-left: 8px;
+  opacity: 0.8;
+}
+
+.sidebar-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.sidebar-item {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 16px 18px;
+  border-radius: 16px;
+  background: transparent;
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  border: 1px solid transparent;
+  text-align: left;
+}
+
+.sidebar-item .item-icon {
+  font-size: 1.25rem;
+  filter: grayscale(1) opacity(0.6);
+  transition: var(--transition);
+}
+
+.sidebar-item:hover {
+  background: rgba(108, 99, 255, 0.08);
+  color: var(--text);
+  border-color: rgba(108, 99, 255, 0.15);
+  transform: translateX(4px);
+}
+
+.sidebar-item:hover .item-icon {
+  filter: grayscale(0) opacity(1);
+}
+
+.sidebar-item.active {
+  background: linear-gradient(135deg, rgba(108, 99, 255, 0.18), rgba(0, 212, 170, 0.1));
+  color: #fff;
+  border-color: var(--primary);
+  box-shadow: 0 10px 30px -10px rgba(108, 99, 255, 0.4);
+}
+
+.sidebar-item.active .item-icon {
+  filter: grayscale(0) opacity(1);
+  transform: scale(1.1);
+}
+
+.sidebar-loading {
+  padding: 20px;
+  text-align: center;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  font-style: italic;
+}
+
+/* ── Main Content Flow ─────────────────────────────────────── */
+.main-content-flow {
+  flex: 1;
+  min-width: 0;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
 .container {
   position: relative;
   z-index: 1;
-  max-width: 860px;
+  max-width: 900px;
+  width: 100%;
   margin: 0 auto;
-  padding: 0 20px 60px;
+  padding: 20px 40px 80px;
   display: flex;
   flex-direction: column;
   gap: 32px;
+}
+
+@media (max-width: 1024px) {
+  .sidebar-nav {
+    width: 260px;
+  }
+}
+
+@media (max-width: 850px) {
+  .layout-wrapper {
+    flex-direction: column;
+  }
+  .sidebar-nav {
+    width: 100%;
+    height: auto;
+    position: relative;
+    top: 0;
+    border-right: none;
+    border-bottom: 1px solid var(--glass-border);
+    padding: 20px;
+    flex-direction: row;
+    overflow-x: auto;
+    gap: 12px;
+  }
+  .sidebar-header {
+    display: none;
+  }
+  .sidebar-list {
+    flex-direction: row;
+  }
+  .sidebar-item {
+    padding: 10px 16px;
+    white-space: nowrap;
+    transform: none !important;
+  }
 }
 
 /* ── Glass Card ─────────────────────────────────────────────── */

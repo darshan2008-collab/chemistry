@@ -260,44 +260,87 @@
             });
         }
 
+        function activateMenuTarget(targetKey) {
+            if (!targetKey) return;
+            showPanel(targetKey);
+            if (targetKey === 'assignments' && typeof refreshAssignments === 'function') {
+                refreshAssignments();
+            }
+            if (targetKey === 'operations') {
+                if (typeof refreshDbStatus === 'function') refreshDbStatus();
+                if (typeof refreshSubjects === 'function') refreshSubjects();
+            }
+        }
+
         menuButtons.forEach((btn) => {
-            btn.addEventListener('click', () => showPanel(btn.dataset.menuTarget));
+            btn.addEventListener('click', () => {
+                activateMenuTarget(btn.dataset.menuTarget);
+            });
+
+            // iOS/Android fallback: ensure touch can switch panels even if click is delayed.
+            btn.addEventListener('pointerup', (e) => {
+                if (e.pointerType === 'touch') {
+                    e.preventDefault();
+                    activateMenuTarget(btn.dataset.menuTarget);
+                }
+            });
         });
 
-        showPanel('staff');
+        const menuContainer = document.querySelector('.admin-menu');
+        if (menuContainer) {
+            menuContainer.addEventListener('touchend', (e) => {
+                const targetBtn = e.target.closest('.admin-menu-btn');
+                if (!targetBtn) return;
+                e.preventDefault();
+                activateMenuTarget(targetBtn.dataset.menuTarget);
+            }, { passive: false });
+        }
+
+        window.__openSuperadminPanel = activateMenuTarget;
+
+        // Initialize with first panel
+        activateMenuTarget('staff');
     }
 
-    function initAssignmentPanel() {
-        const shell = document.querySelector('main.shell');
-        if (!shell) return;
+    let refreshAssignments = () => {};
+    let refreshDbStatus = () => {};
+    let refreshSubjects = () => {};
 
-        const panel = document.createElement('div');
-        panel.className = 'menu-panel';
-        panel.dataset.panel = 'assignments';
-        panel.hidden = true;
-        panel.innerHTML = `
+    function initAssignmentPanel() {
+        const mount = document.getElementById('assignmentsMount');
+        if (!mount) return;
+
+        mount.innerHTML = `
             <div style="margin-bottom:24px;">
-                <h2 style="margin-bottom:12px;">Student-Teacher Assignment</h2>
-                <p style="color:var(--muted);font-size:0.9rem;">Select students, choose a teacher and subject, then assign or manage assignments in bulk.</p>
+                <h2 style="margin-bottom:8px;">Student Control & Teacher Mapping</h2>
+                <p style="color:var(--muted);font-size:0.85rem;">Manage batch assignments between students, teachers, and subjects.</p>
             </div>
             
             <div class="grid">
-                <section class="card" style="grid-column:1 / -1;">
+                <section class="card" style="grid-column: 1 / -1;">
                     <div class="head-row">
-                        <h3 style="font-size:1rem;">1️⃣ Select Students</h3>
-                        <div style="display:flex;gap:6px;">
-                            <button class="btn ghost" type="button" id="assignSelectAllBtn" style="font-size:0.85rem;">Select All</button>
-                            <button class="btn ghost" type="button" id="assignClearAllBtn" style="font-size:0.85rem;">Clear All</button>
+                        <h3 style="font-size:1rem;margin:0;">1️⃣ Select Students to Assign</h3>
+                        <div style="display:flex;gap:8px;">
+                            <button class="btn ghost" type="button" id="assignSelectAllBtn">Select All</button>
+                            <button class="btn ghost" type="button" id="assignClearAllBtn">Clear Selection</button>
                         </div>
                     </div>
-                    <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap;">
-                        <input id="assignStudentSearch" type="text" placeholder="🔍 Search by register no or name..." style="flex:1;min-width:200px;border:1px solid var(--line);border-radius:12px;background:var(--panel-strong);color:var(--text);padding:11px 12px;font-size:0.9rem;" />
-                        <select id="assignDeptFilter" style="border:1px solid var(--line);border-radius:12px;background:var(--panel-strong);color:var(--text);padding:11px 12px;font-size:0.9rem;min-width:140px;">
-                            <option value="all">All Departments</option>
-                        </select>
-                        <select id="assignSectionFilter" style="border:1px solid var(--line);border-radius:12px;background:var(--panel-strong);color:var(--text);padding:11px 12px;font-size:0.9rem;min-width:120px;">
-                            <option value="all">All Sections</option>
-                        </select>
+                    
+                    <div class="row" style="margin-top:12px;">
+                        <div class="col" style="flex:2;">
+                            <input id="assignStudentSearch" type="text" placeholder="🔍 Find students by name or reg no..." />
+                        </div>
+                        <div class="col">
+                            <select id="assignDeptFilter" class="input-select" style="width:100%;height:100%;background:var(--panel-strong);border:1px solid var(--line);border-radius:12px;color:var(--text);padding:0 12px;">
+                                <option value="all">All Depts</option>
+                            </select>
+                        </div>
+                        <div class="col">
+                            <select id="assignSectionFilter" class="input-select" style="width:100%;height:100%;background:var(--panel-strong);border:1px solid var(--line);border-radius:12px;color:var(--text);padding:0 12px;">
+                                <option value="all">All Sections</option>
+                            </select>
+                        </div>
+                        </div>
                     </div>
                     <div id="assignStudentList" style="border:1px solid var(--line);border-radius:12px;background:var(--panel-strong);padding:12px 0;max-height:360px;overflow-y:auto;font-size:0.88rem;"></div>
                 </section>
@@ -330,8 +373,9 @@
                     </div>
                 </div>
                 <form id="assignForm" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
-                    <button class="btn primary" type="submit" style="flex:1;min-width:200px;">✓ Assign Selected Students</button>
-                    <button class="btn" type="button" id="assignBulkDeleteBtn" style="flex:1;min-width:200px;">✕ Delete All Assignments</button>
+                    <button class="btn primary" type="submit" id="assignSelectedBtn" style="flex:1;min-width:200px;">✓ Assign Selected Students</button>
+                    <button class="btn" type="button" id="assignAllFilteredBtn" style="flex:1;min-width:200px;background:var(--accent);color:white;">⚡ Assign All Filtered Students</button>
+                    <button class="btn" type="button" id="assignBulkDeleteBtn" style="flex:1;min-width:200px;border-color:#ffb8c7;color:#ffb8c7;">✕ Unassign Selected</button>
                 </form>
                 <p id="assignMsg" class="msg"></p>
             </section>
@@ -339,27 +383,31 @@
             <section class="card" style="margin-top:24px;">
                 <div class="head-row">
                     <h3 style="font-size:1rem;">📋 Current Assignments</h3>
-                    <button class="btn ghost" id="assignRefreshBtn" type="button">Refresh</button>
+                    <div style="display:flex;gap:8px;">
+                        <button class="btn ghost" id="assignRefreshBtn" type="button">Refresh</button>
+                    </div>
                 </div>
                 <div id="assignMatrix" class="list"></div>
             </section>
         `;
-        shell.appendChild(panel);
-
-        const studentList = panel.querySelector('#assignStudentList');
-        const studentSearch = panel.querySelector('#assignStudentSearch');
-        const deptFilter = panel.querySelector('#assignDeptFilter');
-        const sectionFilter = panel.querySelector('#assignSectionFilter');
-        const staffSel = panel.querySelector('#assignStaff');
-        const subjectSel = panel.querySelector('#assignSubject');
-        const msg = panel.querySelector('#assignMsg');
-        const matrix = panel.querySelector('#assignMatrix');
-        const newSubjectCodeInput = panel.querySelector('#assignNewSubjectCode');
-        const newSubjectNameInput = panel.querySelector('#assignNewSubjectName');
+        const studentList = mount.querySelector('#assignStudentList');
+        const studentSearch = mount.querySelector('#assignStudentSearch');
+        const deptFilter = mount.querySelector('#assignDeptFilter');
+        const sectionFilter = mount.querySelector('#assignSectionFilter');
+        const staffSel = mount.querySelector('#assignStaff');
+        const subjectSel = mount.querySelector('#assignSubject');
+        const msg = mount.querySelector('#assignMsg');
+        const matrix = mount.querySelector('#assignMatrix');
+        const newSubjectCodeInput = mount.querySelector('#assignNewSubjectCode');
+        const newSubjectNameInput = mount.querySelector('#assignNewSubjectName');
         let allStudents = [];
 
-        function extractMetadata(regNo) {
-            const match = String(regNo || '').trim().match(/([A-Z]+)(\d+)$/i);
+        function extractMetadata(s) {
+            if (s && s.stream && s.section) {
+                return { dept: s.stream, sec: s.section, streamName: `${s.stream}-${s.section}` };
+            }
+            const regNo = String(s.reg_no || s || '').trim();
+            const match = regNo.match(/([A-Z]+)(\d+)$/i);
             if (!match) return { dept: 'OTHER', sec: 'Unknown', streamName: 'Other' };
             
             const deptCode = match[1].toUpperCase();
@@ -406,9 +454,9 @@
             const deptSet = new Set();
             const secSet = new Set();
             allStudents.forEach(s => {
-                const { dept, sec } = extractMetadata(s.reg_no);
-                if (dept !== 'OTHER') deptSet.add(dept);
-                if (sec !== 'Unknown') secSet.add(sec);
+                const { dept, sec } = extractMetadata(s);
+                if (dept && dept !== 'OTHER') deptSet.add(dept);
+                if (sec && sec !== 'Unknown') secSet.add(sec);
             });
             deptFilter.innerHTML = '<option value="all">All Departments</option>' + 
                 Array.from(deptSet).sort().map(d => `<option value="${d}">${d}</option>`).join('');
@@ -444,7 +492,7 @@
             const sVal = sectionFilter.value;
 
             const filtered = allStudents.filter((s) => {
-                const { dept, sec } = extractMetadata(s.reg_no);
+                const { dept, sec } = extractMetadata(s);
                 const mQuery = !q || String(s.reg_no || '').toLowerCase().includes(q) || String(s.full_name || '').toLowerCase().includes(q);
                 const mDept = dVal === 'all' || dVal === dept;
                 const mSec = sVal === 'all' || sVal === sec;
@@ -459,7 +507,7 @@
 
             const groups = {};
             filtered.forEach(s => {
-                const { streamName } = extractMetadata(s.reg_no);
+                const { streamName } = extractMetadata(s);
                 const key = streamName;
                 if (!groups[key]) groups[key] = [];
                 groups[key].push(s);
@@ -544,47 +592,77 @@
             }
         }
 
-        panel.querySelector('#assignForm').addEventListener('submit', async (e) => {
+        mount.querySelector('#assignForm').addEventListener('submit', async (e) => {
             e.preventDefault();
             const selectedRegNos = getSelectedStudentRegNos();
             const staffEmail = String(staffSel.value || '').trim();
             const subjectId = Number(subjectSel.value || 0);
-            
+
             if (!selectedRegNos.length || !staffEmail || !subjectId) {
-                setMsg('Select at least one student, teacher, and subject', true);
+                setMsg('Select students, teacher, and subject first', true);
                 return;
             }
 
             try {
-                let assigned = 0;
-                let failed = 0;
-                let firstError = '';
-                for (const regNo of selectedRegNos) {
-                    try {
-                        await apiJson('/api/admin/assign/student-staff-subject', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ regNo, staffEmail, subjectId }),
-                        });
-                        assigned++;
-                    } catch (err) {
-                        failed++;
-                        if (!firstError) firstError = err?.message || 'Failed';
-                    }
-                }
-                if (failed > 0) {
-                    setMsg(`Assigned ${assigned}/${selectedRegNos.length}. Failed ${failed}. ${firstError}`, true);
-                } else {
-                    setMsg(`Assigned ${assigned}/${selectedRegNos.length} students to ${staffEmail}`);
-                }
-                toast(`${assigned} assignments saved${failed ? `, ${failed} failed` : ''}`);
+                setMsg('Assigning selected students...', false);
+                const result = await apiJson('/api/admin/assign/bulk', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ regNos: selectedRegNos, staffEmail, subjectId, mode: 'assign' }),
+                });
+                setMsg(`Successfully assigned ${result.count} selected students`);
+                toast('Assignment complete');
                 await refreshMatrix();
             } catch (err) {
-                setMsg(err.message || 'Failed to save assignment', true);
+                setMsg(err.message || 'Assignment failed', true);
             }
         });
 
-        panel.querySelector('#assignCreateSubjectBtn').addEventListener('click', async () => {
+        mount.querySelector('#assignAllFilteredBtn').addEventListener('click', async () => {
+            const q = String(studentSearch.value || '').trim().toLowerCase();
+            const dVal = deptFilter.value;
+            const sVal = sectionFilter.value;
+            const staffEmail = String(staffSel.value || '').trim();
+            const subjectId = Number(subjectSel.value || 0);
+
+            if (!staffEmail || !subjectId) {
+                setMsg('Select teacher and subject first', true);
+                return;
+            }
+
+            const filteredRegNos = allStudents.filter((s) => {
+                const { dept, sec } = extractMetadata(s);
+                const mQuery = !q || String(s.reg_no || '').toLowerCase().includes(q) || String(s.full_name || '').toLowerCase().includes(q);
+                const mDept = dVal === 'all' || dVal === dept;
+                const mSec = sVal === 'all' || sVal === sec;
+                return mQuery && mDept && mSec;
+            }).map((s) => s.reg_no);
+
+            if (!filteredRegNos.length) {
+                setMsg('No students matching current filters', true);
+                return;
+            }
+
+            if (!confirm(`Assign ALL ${filteredRegNos.length} students currently shown to ${staffEmail} for this subject?`)) {
+                return;
+            }
+
+            try {
+                setMsg('Bulk assigning...', false);
+                const result = await apiJson('/api/admin/assign/bulk', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ regNos: filteredRegNos, staffEmail, subjectId, mode: 'assign' }),
+                });
+                setMsg(`Successfully assigned ALL ${result.count} filtered students`);
+                toast('Bulk assignment complete');
+                await refreshMatrix();
+            } catch (err) {
+                setMsg(err.message || 'Bulk assignment failed', true);
+            }
+        });
+
+        mount.querySelector('#assignCreateSubjectBtn').addEventListener('click', async () => {
             const code = String(newSubjectCodeInput.value || '').trim();
             const name = String(newSubjectNameInput.value || '').trim();
             if (!code || !name) {
@@ -608,7 +686,7 @@
             }
         });
 
-        panel.querySelector('#assignSubjectToStaffBtn').addEventListener('click', async () => {
+        mount.querySelector('#assignSubjectToStaffBtn').addEventListener('click', async () => {
             const staffEmail = String(staffSel.value || '').trim();
             const subjectId = Number(subjectSel.value || 0);
             if (!staffEmail || !subjectId) {
@@ -629,7 +707,7 @@
             }
         });
 
-        panel.querySelector('#assignSubjectToStudentsBtn').addEventListener('click', async () => {
+        mount.querySelector('#assignSubjectToStudentsBtn').addEventListener('click', async () => {
             const selectedRegNos = getSelectedStudentRegNos();
             const subjectId = Number(subjectSel.value || 0);
             if (!selectedRegNos.length || !subjectId) {
@@ -638,35 +716,21 @@
             }
 
             try {
-                let assigned = 0;
-                let failed = 0;
-                let firstError = '';
-                for (const regNo of selectedRegNos) {
-                    try {
-                        await apiJson('/api/admin/assign/student-subject', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ regNo, subjectId }),
-                        });
-                        assigned++;
-                    } catch (err) {
-                        failed++;
-                        if (!firstError) firstError = err?.message || 'Failed';
-                    }
-                }
-
-                if (failed > 0) {
-                    setMsg(`Student-subject mapping ${assigned}/${selectedRegNos.length}. Failed ${failed}. ${firstError}`, true);
-                } else {
-                    setMsg(`Subject assigned to ${assigned}/${selectedRegNos.length} students`);
-                }
-                toast(`Student-subject assigned: ${assigned}${failed ? `, failed: ${failed}` : ''}`);
+                setMsg('Assigning subject to students...', false);
+                const result = await apiJson('/api/admin/assign/bulk', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ regNos: selectedRegNos, subjectId, mode: 'assign-subject' }),
+                });
+                setMsg(`Successfully assigned subject to ${result.count} students`);
+                toast(`Subject assigned: ${result.count}`);
+                await refreshMatrix();
             } catch (err) {
                 setMsg(err.message || 'Failed to assign subject to students', true);
             }
         });
 
-        panel.querySelector('#assignBulkDeleteBtn').addEventListener('click', async () => {
+        mount.querySelector('#assignBulkDeleteBtn').addEventListener('click', async () => {
             const selectedRegNos = getSelectedStudentRegNos();
             const staffEmail = String(staffSel.value || '').trim();
             const subjectId = Number(subjectSel.value || 0);
@@ -676,142 +740,136 @@
                 return;
             }
 
-            if (!confirm(`Delete all assignments for ${selectedRegNos.length} student(s) under ${staffEmail}? This cannot be undone.`)) {
+            if (!confirm(`Unassign ${selectedRegNos.length} student(s) from ${staffEmail}? Records remain, but they won't show in teacher dashboard.`)) {
                 return;
             }
 
             try {
-                let deleted = 0;
-                let failed = 0;
-                let firstError = '';
-                for (const regNo of selectedRegNos) {
-                    try {
-                        await apiJson('/api/admin/assign/student-staff-subject', {
-                            method: 'DELETE',
-                            headers: { 'Content-Type': 'application/json' },
-                            body: JSON.stringify({ regNo, staffEmail, subjectId }),
-                        });
-                        deleted++;
-                    } catch (err) {
-                        failed++;
-                        if (!firstError) firstError = err?.message || 'Failed';
-                    }
-                }
-                if (failed > 0) {
-                    setMsg(`Deleted ${deleted}/${selectedRegNos.length}. Failed ${failed}. ${firstError}`, true);
-                } else {
-                    setMsg(`Deleted all assignments for ${deleted}/${selectedRegNos.length} students under ${staffEmail}`);
-                }
-                toast(`${deleted} assignments deleted${failed ? `, ${failed} failed` : ''}`);
+                setMsg('Unassigning students...', false);
+                const result = await apiJson('/api/admin/assign/bulk', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ regNos: selectedRegNos, staffEmail, subjectId, mode: 'unassign' }),
+                });
+                setMsg(`Successfully unassigned ${result.count} students`);
+                toast('Assignments removed');
                 await refreshMatrix();
             } catch (err) {
-                setMsg(err.message || 'Failed to delete assignments', true);
+                setMsg(err.message || 'Failed to unassign', true);
             }
         });
 
-        panel.querySelector('#assignSelectAllBtn').addEventListener('click', () => {
+        mount.querySelector('#assignSelectAllBtn').addEventListener('click', () => {
             const checkboxes = studentList.querySelectorAll('input[type="checkbox"]');
             checkboxes.forEach((cb) => { cb.checked = true; });
             setMsg(`Selected ${checkboxes.length} students`);
         });
 
-        panel.querySelector('#assignClearAllBtn').addEventListener('click', () => {
+        mount.querySelector('#assignClearAllBtn').addEventListener('click', () => {
             const checkboxes = studentList.querySelectorAll('input[type="checkbox"]');
             checkboxes.forEach((cb) => { cb.checked = false; });
             setMsg('Cleared all selections');
         });
 
-        panel.querySelector('#assignRefreshBtn').addEventListener('click', async () => {
+        mount.querySelector('#assignRefreshBtn').addEventListener('click', async () => {
             await loadOptions();
             await refreshMatrix();
         });
+
+        refreshAssignments = async () => {
+            await loadOptions();
+            await refreshMatrix();
+        };
 
         loadOptions();
         refreshMatrix();
     }
 
     function initAdminOpsPanel() {
-        const shell = document.querySelector('main.shell');
-        if (!shell) return;
+        const mount = document.getElementById('operationsMount');
+        if (!mount) return;
 
-        const panel = document.createElement('section');
-        panel.className = 'card menu-panel';
-        panel.dataset.panel = 'operations';
-        panel.hidden = true;
-        panel.innerHTML = `
-            <div class="head-row">
-                <h2>Operations Panel</h2>
-                <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                    <button class="btn ghost" id="opsRefreshDbStatusBtn" type="button">Refresh DB Status</button>
-                    <button class="btn ghost" id="opsRefreshAuditBtn" type="button">Refresh Audit</button>
+        mount.innerHTML = `
+            <div class="head-row" style="margin-bottom:20px;">
+                <h2>System Control & Subject Manager</h2>
+                <div style="display:flex;gap:12px;">
+                    <button class="btn ghost" id="opsRefreshDbStatusBtn" type="button">Refresh Health</button>
+                    <button class="btn ghost" id="opsRefreshAuditBtn" type="button">Recent Logs</button>
                 </div>
             </div>
-            <section class="card" style="margin-bottom:14px;">
-                <div class="head-row" style="margin-bottom:8px;">
-                    <h3 style="font-size:1rem;">Live Database Status</h3>
-                    <span id="opsDbStatusTime" style="font-size:0.78rem;color:var(--muted);"></span>
+            
+            <section class="card" style="margin-bottom:20px;border-color:var(--accent-3);">
+                <div class="head-row" style="margin-bottom:12px;">
+                    <h3 style="font-size:1rem;margin:0;">Live Data Integrity</h3>
+                    <span id="opsDbStatusTime" style="font-size:0.8rem;color:var(--muted);"></span>
                 </div>
-                <div id="opsDbStatus" class="list"></div>
+                <div id="opsDbStatus" class="list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;"></div>
             </section>
-            <div style="display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));">
-                <form id="opsStaffActionForm" class="form" novalidate>
-                    <label for="opsStaffEmail">Staff Email/Username</label>
-                    <input id="opsStaffEmail" type="text" placeholder="e.g. unitaryx" required />
-                    <label for="opsStaffPassword">New Password (for reset)</label>
-                    <input id="opsStaffPassword" type="text" placeholder="Minimum 6 characters" />
-                    <div style="display:flex;gap:8px;flex-wrap:wrap;">
-                        <button class="btn" type="button" id="opsActivateBtn">Activate</button>
-                        <button class="btn" type="button" id="opsDeactivateBtn">Deactivate</button>
-                        <button class="btn primary" type="button" id="opsResetPwBtn">Reset PW</button>
+
+            <div class="grid">
+                <form id="opsStaffActionForm" class="form card" novalidate>
+                    <h3>Staff Quick Actions</h3>
+                    <label for="opsStaffEmail">Username to Target</label>
+                    <input id="opsStaffEmail" type="text" placeholder="e.g. shreekesavan" required />
+                    
+                    <label for="opsStaffPassword">New Password (Reset Only)</label>
+                    <input id="opsStaffPassword" type="password" placeholder="Min 6 chars" />
+                    
+                    <div class="btn-group">
+                        <button class="btn ghost" type="button" id="opsActivateBtn">Activate</button>
+                        <button class="btn ghost" type="button" id="opsDeactivateBtn">Disable</button>
                     </div>
+                    <button class="btn primary" type="button" id="opsResetPwBtn" style="margin-top:8px;">Update Credentials</button>
                     <p id="opsStaffMsg" class="msg"></p>
                 </form>
 
-                <form id="opsPolicyForm" class="form" novalidate>
-                    <label for="opsPolicyEmail">Policy Target Email</label>
-                    <input id="opsPolicyEmail" type="text" placeholder="e.g. unitaryx" required />
-                    <label for="opsPolicyJson">Permissions JSON</label>
-                    <input id="opsPolicyJson" type="text" value='{"sendAnnouncements":true,"uploadMaterials":true}' />
-                    <button class="btn" type="submit">Upsert Policy</button>
-                    <p id="opsPolicyMsg" class="msg"></p>
-                </form>
-
-                <form id="opsSubjectForm" class="form" novalidate>
-                    <label for="opsSubjectCode">Subject Code</label>
-                    <input id="opsSubjectCode" type="text" placeholder="e.g. CHEM101" required />
-                    <label for="opsSubjectName">Subject Name</label>
-                    <input id="opsSubjectName" type="text" placeholder="e.g. Organic Chemistry" required />
-                    <button class="btn" type="submit">Create Subject</button>
-                    <p class="msg" style="margin-top:4px;color:var(--muted);">Existing code will be re-activated and updated.</p>
+                <form id="opsSubjectForm" class="form card" novalidate>
+                    <h3>Subject Management</h3>
+                    <div class="row">
+                        <div class="col">
+                            <label for="opsSubjectCode">Subject Code</label>
+                            <input id="opsSubjectCode" type="text" placeholder="e.g. CHEM202" required />
+                        </div>
+                        <div class="col">
+                            <label for="opsSubjectName">Display Name</label>
+                            <input id="opsSubjectName" type="text" placeholder="e.g. Lab Manual" required />
+                        </div>
+                    </div>
+                    <div class="btn-group">
+                        <button id="opsSubjectSubmitBtn" class="btn primary" type="submit">Create Subject</button>
+                        <button id="opsSubjectCancelBtn" class="btn ghost" type="button" style="display:none;">Reset</button>
+                    </div>
                     <p id="opsSubjectMsg" class="msg"></p>
                 </form>
-
-                <form id="opsDryRunForm" class="form" novalidate>
-                    <label for="opsDryRunFile">Dry-Run Student Import File</label>
-                    <input id="opsDryRunFile" type="file" accept=".xlsx,.xls,.csv" required />
-                    <button class="btn" type="submit">Run Dry-Run</button>
-                    <p id="opsDryRunMsg" class="msg"></p>
-                </form>
             </div>
-            <div style="margin-top:14px;display:grid;gap:8px;">
-                <label style="font-size:0.76rem;color:var(--muted);font-weight:800;letter-spacing:0.02em;">Subject Management</label>
+
+            <section class="card accounts-list-card" style="margin-top:20px;">
+                <div class="head-row">
+                    <h3>Active Subject List</h3>
+                </div>
                 <div id="opsSubjectList" class="list"></div>
-            </div>
-            <div style="margin-top:14px;display:grid;gap:8px;">
-                <label style="font-size:0.76rem;color:var(--muted);font-weight:800;letter-spacing:0.02em;">Audit Logs (latest 25)</label>
+            </section>
+
+            <section class="card" style="margin-top:20px;">
+                <h3 style="margin-bottom:12px;">Security Audit Trail</h3>
                 <div id="opsAuditList" class="list"></div>
-            </div>
+            </section>
         `;
-        shell.appendChild(panel);
 
-        const staffMsg = panel.querySelector('#opsStaffMsg');
-        const policyMsg = panel.querySelector('#opsPolicyMsg');
-        const subjectMsg = panel.querySelector('#opsSubjectMsg');
-        const dryRunMsg = panel.querySelector('#opsDryRunMsg');
+        const staffMsg = mount.querySelector('#opsStaffMsg');
+        const policyMsg = mount.querySelector('#opsPolicyMsg');
+        const dryRunMsg = mount.querySelector('#opsDryRunMsg');
+        const subjectMsg = mount.querySelector('#opsSubjectMsg');
 
-        async function refreshDbStatus() {
-            const list = panel.querySelector('#opsDbStatus');
-            const timeEl = panel.querySelector('#opsDbStatusTime');
+        let currentSubjectEditId = null;
+        const subjectSubmitBtn = mount.querySelector('#opsSubjectSubmitBtn');
+        const subjectCancelBtn = mount.querySelector('#opsSubjectCancelBtn');
+        const subjectCodeInput = mount.querySelector('#opsSubjectCode');
+        const subjectNameInput = mount.querySelector('#opsSubjectName');
+
+        refreshDbStatus = async function() {
+            const list = mount.querySelector('#opsDbStatus');
+            const timeEl = mount.querySelector('#opsDbStatusTime');
             list.innerHTML = 'Loading...';
             try {
                 const payload = await apiJson('/api/superadmin/db-status');
@@ -866,8 +924,8 @@
         }
 
         async function runStaffAction(kind) {
-            const email = String(panel.querySelector('#opsStaffEmail').value || '').trim();
-            const password = String(panel.querySelector('#opsStaffPassword').value || '').trim();
+            const email = String(mount.querySelector('#opsStaffEmail').value || '').trim();
+            const password = String(mount.querySelector('#opsStaffPassword').value || '').trim();
             if (!email) {
                 staffMsg.style.color = '#ffb8c7';
                 staffMsg.textContent = 'Enter staff email/username';
@@ -896,8 +954,8 @@
             }
         }
 
-        async function refreshSubjects() {
-            const list = panel.querySelector('#opsSubjectList');
+        refreshSubjects = async function() {
+            const list = mount.querySelector('#opsSubjectList');
             list.innerHTML = 'Loading...';
             try {
                 const payload = await apiJson('/api/admin/subjects');
@@ -910,15 +968,29 @@
                 list.innerHTML = subjects.map((s) => {
                     const isActive = Boolean(s.is_active);
                     return `
-                        <div class="list-item" style="display:flex;justify-content:space-between;align-items:center;gap:8px;">
-                            <div style="min-width:0;">
-                                <div class="name">${escapeHtml(s.code || '')} - ${escapeHtml(s.name || '')}</div>
-                                <div class="meta">#${escapeHtml(String(s.id || ''))} · ${isActive ? 'Active' : 'Inactive'}</div>
+                        <div class="list-item" style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:12px;background:rgba(255,255,255,0.03);border-radius:14px;margin-bottom:8px;">
+                            <div style="min-width:0;flex:1;">
+                                <div class="name" style="font-size:0.95rem;">${escapeHtml(s.code || '')} - ${escapeHtml(s.name || '')}</div>
+                                <div class="meta" style="color:var(--muted);font-size:0.78rem;">System ID #${s.id} · Status: <span style="color:${isActive ? 'var(--accent)' : 'var(--danger)'};font-weight:800;">${isActive ? 'Active' : 'Archived'}</span></div>
                             </div>
-                            <button class="btn ghost ops-subject-toggle" type="button" data-id="${escapeHtml(String(s.id || ''))}" data-next="${isActive ? 'false' : 'true'}">${isActive ? 'Deactivate' : 'Activate'}</button>
+                            <div style="display:flex;gap:8px;">
+                                <button class="btn ghost ops-subject-edit" type="button" data-id="${s.id}" data-code="${s.code}" data-name="${s.name}" style="padding:4px 12px;font-size:0.75rem;">Edit</button>
+                                <button class="btn ghost ops-subject-toggle" type="button" data-id="${s.id}" data-next="${!isActive}" style="padding:4px 12px;font-size:0.75rem;border-color:${isActive ? 'var(--line)' : 'var(--accent)'};">${isActive ? 'Archive' : 'Restore'}</button>
+                            </div>
                         </div>
                     `;
                 }).join('');
+
+                list.querySelectorAll('.ops-subject-edit').forEach(btn => {
+                    btn.addEventListener('click', () => {
+                        currentSubjectEditId = Number(btn.dataset.id);
+                        subjectCodeInput.value = btn.dataset.code;
+                        subjectNameInput.value = btn.dataset.name;
+                        subjectSubmitBtn.textContent = 'Update Subject';
+                        subjectCancelBtn.style.display = 'inline-block';
+                        subjectCodeInput.focus();
+                    });
+                });
 
                 list.querySelectorAll('.ops-subject-toggle').forEach((btn) => {
                     btn.addEventListener('click', async () => {
@@ -946,39 +1018,50 @@
             }
         }
 
-        panel.querySelector('#opsActivateBtn').addEventListener('click', () => runStaffAction('activate'));
-        panel.querySelector('#opsDeactivateBtn').addEventListener('click', () => runStaffAction('deactivate'));
-        panel.querySelector('#opsResetPwBtn').addEventListener('click', () => runStaffAction('reset-password'));
+        mount.querySelector('#opsActivateBtn').addEventListener('click', () => runStaffAction('activate'));
+        mount.querySelector('#opsDeactivateBtn').addEventListener('click', () => runStaffAction('deactivate'));
+        mount.querySelector('#opsResetPwBtn').addEventListener('click', () => runStaffAction('reset-password'));
 
-        panel.querySelector('#opsPolicyForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const email = String(panel.querySelector('#opsPolicyEmail').value || '').trim();
-            const jsonText = String(panel.querySelector('#opsPolicyJson').value || '').trim();
-            if (!email || !jsonText) {
-                policyMsg.style.color = '#ffb8c7';
-                policyMsg.textContent = 'Email and policy JSON are required';
-                return;
-            }
-            try {
-                const permissions = JSON.parse(jsonText);
-                await apiJson(`/api/admin/role-policies/${encodeURIComponent(email)}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ permissions }),
-                });
-                policyMsg.style.color = '#9de9ff';
-                policyMsg.textContent = `Policy saved for ${email}`;
-                toast('Role policy saved');
-            } catch (err) {
-                policyMsg.style.color = '#ffb8c7';
-                policyMsg.textContent = err.message || 'Policy update failed';
-            }
+        const opsPolicyForm = mount.querySelector('#opsPolicyForm');
+        if (opsPolicyForm && policyMsg) {
+            opsPolicyForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const email = String(mount.querySelector('#opsPolicyEmail').value || '').trim();
+                const jsonText = String(mount.querySelector('#opsPolicyJson').value || '').trim();
+                if (!email || !jsonText) {
+                    policyMsg.style.color = '#ffb8c7';
+                    policyMsg.textContent = 'Email and policy JSON are required';
+                    return;
+                }
+                try {
+                    const permissions = JSON.parse(jsonText);
+                    await apiJson(`/api/admin/role-policies/${encodeURIComponent(email)}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ permissions }),
+                    });
+                    policyMsg.style.color = '#9de9ff';
+                    policyMsg.textContent = `Policy saved for ${email}`;
+                    toast('Role policy saved');
+                } catch (err) {
+                    policyMsg.style.color = '#ffb8c7';
+                    policyMsg.textContent = err.message || 'Policy update failed';
+                }
+            });
+        }
+
+        subjectCancelBtn.addEventListener('click', () => {
+            currentSubjectEditId = null;
+            subjectCodeInput.value = '';
+            subjectNameInput.value = '';
+            subjectSubmitBtn.textContent = 'Create Subject';
+            subjectCancelBtn.style.display = 'none';
         });
 
-        panel.querySelector('#opsSubjectForm').addEventListener('submit', async (e) => {
+        mount.querySelector('#opsSubjectForm').addEventListener('submit', async (e) => {
             e.preventDefault();
-            const code = String(panel.querySelector('#opsSubjectCode').value || '').trim();
-            const name = String(panel.querySelector('#opsSubjectName').value || '').trim();
+            const code = String(subjectCodeInput.value || '').trim();
+            const name = String(subjectNameInput.value || '').trim();
             if (!code || !name) {
                 subjectMsg.style.color = '#ffb8c7';
                 subjectMsg.textContent = 'Subject code and subject name are required';
@@ -986,15 +1069,28 @@
             }
 
             try {
-                const payload = await apiJson('/api/admin/subjects', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ code, name }),
-                });
-                subjectMsg.style.color = '#9de9ff';
-                subjectMsg.textContent = `Saved subject: ${payload.subject?.code || code}`;
-                panel.querySelector('#opsSubjectCode').value = '';
-                panel.querySelector('#opsSubjectName').value = '';
+                if (currentSubjectEditId) {
+                    await apiJson(`/api/admin/subjects/${currentSubjectEditId}`, {
+                        method: 'PATCH',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ code, name }),
+                    });
+                    subjectMsg.style.color = '#9de9ff';
+                    subjectMsg.textContent = `Updated subject: ${code}`;
+                    currentSubjectEditId = null;
+                    subjectSubmitBtn.textContent = 'Create Subject';
+                    subjectCancelBtn.style.display = 'none';
+                } else {
+                    const payload = await apiJson('/api/admin/subjects', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ code, name }),
+                    });
+                    subjectMsg.style.color = '#9de9ff';
+                    subjectMsg.textContent = `Created/Updated subject: ${payload.subject?.code || code}`;
+                }
+                subjectCodeInput.value = '';
+                subjectNameInput.value = '';
                 toast('Subject saved');
                 await refreshSubjects();
             } catch (err) {
@@ -1003,33 +1099,36 @@
             }
         });
 
-        panel.querySelector('#opsDryRunForm').addEventListener('submit', async (e) => {
-            e.preventDefault();
-            const file = panel.querySelector('#opsDryRunFile').files?.[0];
-            if (!file) {
-                dryRunMsg.style.color = '#ffb8c7';
-                dryRunMsg.textContent = 'Choose a file for dry-run';
-                return;
-            }
-            try {
-                const formData = new FormData();
-                formData.append('file', file);
-                formData.append('dryRun', 'true');
-                const payload = await apiJson('/api/admin/students/import', {
-                    method: 'POST',
-                    body: formData,
-                });
-                dryRunMsg.style.color = '#9de9ff';
-                dryRunMsg.textContent = `Dry-run rows: ${payload.total || 0} (preview: ${(payload.preview || []).length})`;
-                toast('Dry-run complete');
-            } catch (err) {
-                dryRunMsg.style.color = '#ffb8c7';
-                dryRunMsg.textContent = err.message || 'Dry-run failed';
-            }
-        });
+        const opsDryRunForm = mount.querySelector('#opsDryRunForm');
+        if (opsDryRunForm && dryRunMsg) {
+            opsDryRunForm.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                const file = mount.querySelector('#opsDryRunFile').files?.[0];
+                if (!file) {
+                    dryRunMsg.style.color = '#ffb8c7';
+                    dryRunMsg.textContent = 'Choose a file for dry-run';
+                    return;
+                }
+                try {
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    formData.append('dryRun', 'true');
+                    const payload = await apiJson('/api/admin/students/import', {
+                        method: 'POST',
+                        body: formData,
+                    });
+                    dryRunMsg.style.color = '#9de9ff';
+                    dryRunMsg.textContent = `Dry-run rows: ${payload.total || 0} (preview: ${(payload.preview || []).length})`;
+                    toast('Dry-run complete');
+                } catch (err) {
+                    dryRunMsg.style.color = '#ffb8c7';
+                    dryRunMsg.textContent = err.message || 'Dry-run failed';
+                }
+            });
+        }
 
         async function refreshAudit() {
-            const list = panel.querySelector('#opsAuditList');
+            const list = mount.querySelector('#opsAuditList');
             list.innerHTML = 'Loading...';
             try {
                 const payload = await apiJson('/api/superadmin/audit-logs?limit=25');
@@ -1049,15 +1148,23 @@
             }
         }
 
-        panel.querySelector('#opsRefreshDbStatusBtn').addEventListener('click', refreshDbStatus);
-        panel.querySelector('#opsRefreshAuditBtn').addEventListener('click', refreshAudit);
+        mount.querySelector('#opsRefreshDbStatusBtn').addEventListener('click', refreshDbStatus);
+        mount.querySelector('#opsRefreshAuditBtn').addEventListener('click', refreshAudit);
         refreshDbStatus();
         refreshSubjects();
         refreshAudit();
     }
 
-    initAssignmentPanel();
-    initAdminOpsPanel();
     initSuperAdminMenu();
+    try {
+        initAssignmentPanel();
+    } catch (err) {
+        console.error('Assignments panel init failed:', err);
+    }
+    try {
+        initAdminOpsPanel();
+    } catch (err) {
+        console.error('Operations panel init failed:', err);
+    }
     refreshStaff();
 })();

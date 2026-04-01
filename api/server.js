@@ -16,6 +16,7 @@ const gradedReportFilePath = process.env.GRADED_REPORT_FILE || path.join(uploadD
 const studentsFile = process.env.STUDENTS_FILE || '/app/students-db.js';
 const syncStudentsOnStartup = String(process.env.STUDENTS_SYNC_ON_STARTUP || 'true').trim().toLowerCase() !== 'false';
 const baselineAssignmentsOnStartup = String(process.env.BASELINE_ASSIGNMENTS_ON_STARTUP || 'false').trim().toLowerCase() !== 'false';
+const uhvAssignmentsOnStartup = String(process.env.UHV_ASSIGNMENTS_ON_STARTUP || 'false').trim().toLowerCase() !== 'false';
 const resyncToken = process.env.RESYNC_TOKEN || '';
 const authPepper = process.env.AUTH_PEPPER || 'change_this_auth_pepper';
 const sessionTtlHours = Number(process.env.AUTH_SESSION_TTL_HOURS || 24);
@@ -34,6 +35,13 @@ const allowedStudentUploadMimeTypes = new Set([
 ]);
 
 const allowedStudentUploadExtensions = new Set(['.pdf', '.ppt', '.pptx', '.png', '.jpg', '.jpeg', '.webp', '.heic', '.heif']);
+
+const allowedStudentPptMimeTypes = new Set([
+  'application/vnd.ms-powerpoint',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+]);
+
+const allowedStudentPptExtensions = new Set(['.ppt', '.pptx']);
 
 
 const staffDefaultEmail = (process.env.STAFF_DEFAULT_EMAIL || 'admin@chemtest.in').trim().toLowerCase();
@@ -1234,6 +1242,77 @@ app.post('/admin/assign/student-staff-subject', requireSuperAdmin, async (req, r
   }
 });
 
+app.post('/admin/assign/bulk', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const regNos = Array.isArray(req.body?.regNos) ? req.body.regNos.map(normalizeRegNo).filter(Boolean) : [];
+    const staffEmail = normalizeStaffEmail(req.body?.staffEmail);
+    const subjectId = Number(req.body?.subjectId);
+    const mode = String(req.body?.mode || 'assign').toLowerCase(); // 'assign' or 'unassign'
+
+    if (!regNos.length || !staffEmail || !Number.isFinite(subjectId) || subjectId <= 0) {
+      return res.status(400).json({ error: 'Missing required fields (regNos, staffEmail, subjectId)' });
+    }
+
+    const activeCheck = await pool.query(
+      `SELECT
+         EXISTS(SELECT 1 FROM staff_accounts WHERE email = $1 AND is_active = TRUE) AS has_staff,
+         EXISTS(SELECT 1 FROM subjects WHERE id = $2 AND is_active = TRUE) AS has_subject`,
+      [staffEmail, subjectId]
+    );
+    if (!activeCheck.rows?.[0]?.has_staff) return res.status(400).json({ error: 'Staff account is missing or inactive' });
+    if (!activeCheck.rows?.[0]?.has_subject) return res.status(400).json({ error: 'Subject is missing or inactive' });
+
+    if (mode === 'assign') {
+      // 1. Ensure students are assigned to the subject first
+      await pool.query(
+        `INSERT INTO student_subject_assignments (reg_no, subject_id, is_active)
+         SELECT unnest($1::text[]), $2, TRUE
+         ON CONFLICT (reg_no, subject_id) DO UPDATE SET is_active = TRUE, updated_at = NOW()`,
+        [regNos, subjectId]
+      );
+
+      // 2. Ensure staff is assigned to the subject
+      await pool.query(
+        `INSERT INTO staff_subject_assignments (staff_email, subject_id, is_active)
+         VALUES ($1, $2, TRUE)
+         ON CONFLICT (staff_email, subject_id) DO UPDATE SET is_active = TRUE, updated_at = NOW()`,
+        [staffEmail, subjectId]
+      );
+
+      // 3. Perform bulk staff-student mapping
+      const result = await pool.query(
+        `INSERT INTO student_staff_subject_assignments (reg_no, staff_email, subject_id, is_active)
+         SELECT unnest($1::text[]), $2, $3, TRUE
+         ON CONFLICT (reg_no, staff_email, subject_id)
+         DO UPDATE SET is_active = TRUE, updated_at = NOW()
+         RETURNING id`,
+        [regNos, staffEmail, subjectId]
+      );
+      res.json({ ok: true, count: result.rowCount });
+    } else if (mode === 'assign-subject') {
+      const result = await pool.query(
+        `INSERT INTO student_subject_assignments (reg_no, subject_id, is_active)
+         SELECT unnest($1::text[]), $2, TRUE
+         ON CONFLICT (reg_no, subject_id) DO UPDATE SET is_active = TRUE, updated_at = NOW()
+         RETURNING id`,
+        [regNos, subjectId]
+      );
+      res.json({ ok: true, count: result.rowCount });
+    } else {
+      const result = await pool.query(
+        `UPDATE student_staff_subject_assignments
+         SET is_active = FALSE, updated_at = NOW()
+         WHERE reg_no = ANY($1::text[]) AND staff_email = $2 AND subject_id = $3
+         RETURNING id`,
+        [regNos, staffEmail, subjectId]
+      );
+      res.json({ ok: true, count: result.rowCount });
+    }
+  } catch (err) {
+    next(err);
+  }
+});
+
 app.delete('/admin/assign/student-staff-subject', requireSuperAdmin, async (req, res, next) => {
   try {
     const regNo = normalizeRegNo(req.body?.regNo || req.query?.regNo);
@@ -1383,21 +1462,38 @@ app.get('/staff/students', requireAuth('staff'), async (req, res, next) => {
       return res.status(400).json({ error: 'subjectId is required' });
     }
 
-    const canAccessSubject = await ensureStaffAssignedToSubject(email, subjectId);
-    if (!canAccessSubject) {
-      return res.status(403).json({ error: 'Forbidden' });
+    const isSA = isSuperAdminSession(req.auth);
+    if (!isSA) {
+      const canAccessSubject = await ensureStaffAssignedToSubject(email, subjectId);
+      if (!canAccessSubject) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
     }
 
-    const result = await pool.query(
-      `SELECT s.reg_no, s.full_name, s.stream, s.section
-       FROM student_staff_subject_assignments a
-       JOIN students s ON s.reg_no = a.reg_no
-       WHERE a.staff_email = $1
-         AND a.subject_id = $2
-         AND a.is_active = TRUE
-       ORDER BY s.reg_no ASC`,
-      [email, subjectId]
-    );
+    let result;
+    if (isSA) {
+      // Super Admins see everyone assigned to this subject
+      result = await pool.query(
+        `SELECT s.reg_no, s.full_name, s.stream, s.section
+         FROM students s
+         JOIN student_subject_assignments ssa ON ssa.reg_no = s.reg_no
+         WHERE ssa.subject_id = $1 AND ssa.is_active = TRUE
+         ORDER BY s.reg_no ASC`,
+        [subjectId]
+      );
+    } else {
+      // Regular staff see only their assigned students
+      result = await pool.query(
+        `SELECT s.reg_no, s.full_name, s.stream, s.section
+         FROM student_staff_subject_assignments a
+         JOIN students s ON s.reg_no = a.reg_no
+         WHERE a.staff_email = $1
+           AND a.subject_id = $2
+           AND a.is_active = TRUE
+         ORDER BY s.reg_no ASC`,
+        [email, subjectId]
+      );
+    }
     res.json({ students: result.rows });
   } catch (err) {
     next(err);
@@ -1791,9 +1887,10 @@ app.get('/student/messages/announcements', requireAuth('student'), async (req, r
          AND (
            m.channel_type = 'global'
            OR (m.channel_type = 'student' AND m.target_reg_no = $1)
-           OR (m.channel_type = 'class' AND m.classroom IS NOT NULL AND m.classroom = COALESCE($2, m.classroom))
-           OR (m.channel_type = 'subject' AND m.subject_id IS NOT NULL AND m.subject_id = COALESCE($3, m.subject_id))
-         )
+           OR (m.channel_type = 'class' AND m.classroom IS NOT NULL AND m.classroom = (SELECT section FROM students WHERE reg_no = $1 LIMIT 1))
+           OR (m.channel_type = 'subject' AND m.subject_id IS NOT NULL AND EXISTS (SELECT 1 FROM student_subject_assignments ssa WHERE ssa.reg_no = $1 AND ssa.subject_id = m.subject_id AND ssa.is_active = TRUE))
+         ) AND (COALESCE($2, '') = '' OR m.classroom = $2)
+           AND (COALESCE($3, 0) = 0 OR m.subject_id = $3)
        ORDER BY m.priority DESC, m.created_at DESC`,
       params
     );
@@ -2323,11 +2420,57 @@ function buildStudentImportTemplateBuffer() {
   return XLSX.write(workbook, { type: 'buffer', bookType: 'xlsx' });
 }
 
+function inferStudentMetadata(regNo) {
+  const code = String(regNo || '').trim().toUpperCase();
+  const deptCode = code.slice(6, 9);
+  const rollId = code.slice(-3);
+  const rollInt = parseInt(rollId, 10) || 0;
+
+  let stream = 'OTHER';
+  let section = 'Unknown';
+
+  if (deptCode === 'BAD') {
+    stream = 'AIDS';
+    // Mapping sections based on roll numbers if multiple sections exist
+    if (rollInt <= 60) section = 'A7';
+    else if (rollInt <= 120) section = 'A7-B';
+    else section = 'A7-C';
+  } else if (deptCode === 'BAM') {
+    stream = 'AIDS-M';
+    section = 'A7';
+  } else if (deptCode === 'BCS') {
+    stream = 'CSE';
+    if (rollInt <= 60) section = 'A3';
+    else if (rollInt <= 120) section = 'A2';
+    else section = 'A1'; // Just guessing based on user's mention of a1, a2
+  } else if (deptCode === 'BIT') {
+    stream = 'IT';
+    section = 'A3';
+  } else if (deptCode === 'BSC') {
+    stream = 'CSBS';
+    section = 'A3';
+  }
+
+  // If user specifically wants "AIDS-A" as department, we can format it
+  const deptLabel = {
+    'AIDS': 'AIDS',
+    'AIDS-M': 'AIDS-M',
+    'CSE': 'CSE',
+    'IT': 'IT',
+    'CSBS': 'CSBS',
+    'OTHER': 'OTHER'
+  }[stream] || stream;
+
+  // Let's use the user's requested format "AIDS-A" for the department filter
+  // We'll append the section characteristic if needed, but for now 
+  // let's follow their example: AIDS-A
+  const resultStream = (stream === 'AIDS' || stream === 'CSE') ? `${deptLabel}-A` : deptLabel;
+
+  return { stream: resultStream, section };
+}
+
 function inferSectionFromRegNo(regNo) {
-  const code = String(regNo || '').toUpperCase();
-  if (code.includes('BAD') || code.includes('BAM')) return 'A7';
-  if (code.includes('BCS') || code.includes('BIT') || code.includes('BSC')) return 'A3';
-  return '';
+  return inferStudentMetadata(regNo).section;
 }
 
 async function rebuildGradedReportWorkbook() {
@@ -2701,11 +2844,23 @@ app.get('/student/storage/quota', requireAuth('student'), async (req, res, next)
 });
 
 // ── Subjects list (student + staff) ──────────────────────────────────────────
-app.get('/subjects', requireAuth(['staff', 'student']), async (_req, res, next) => {
+app.get('/subjects', requireAuth(['staff', 'student']), async (req, res, next) => {
   try {
-    const result = await pool.query(
-      `SELECT id, code, name FROM subjects WHERE is_active = TRUE ORDER BY name ASC`
-    );
+    let result;
+    if (req.auth.role === 'student') {
+      result = await pool.query(
+        `SELECT s.id, s.code, s.name 
+         FROM subjects s
+         JOIN student_subject_assignments ssa ON ssa.subject_id = s.id
+         WHERE ssa.reg_no = $1 AND ssa.is_active = TRUE AND s.is_active = TRUE
+         ORDER BY s.name ASC`,
+        [req.auth.regNo]
+      );
+    } else {
+      result = await pool.query(
+        `SELECT id, code, name FROM subjects WHERE is_active = TRUE ORDER BY name ASC`
+      );
+    }
     res.json({ subjects: result.rows.map(r => ({ id: Number(r.id), code: r.code, name: r.name })) });
   } catch (err) {
     next(err);
@@ -2757,14 +2912,16 @@ app.get('/submissions', requireAuth(['staff', 'student']), async (req, res, next
     const subjectIdQuery = req.query.subjectId ? Number(req.query.subjectId) : null;
     const includeArchived = String(req.query.includeArchived || 'true').toLowerCase() === 'true';
     const status = String(req.query.status || '').trim();
+    const streamQuery = String(req.query.stream || '').trim();
+    const sectionQuery = String(req.query.section || '').trim();
 
     const where = [];
     const params = [];
 
     if (req.auth.role === 'student') {
       params.push(req.auth.regNo);
-      where.push(`roll_number = $${params.length}`);
-      where.push('archived = FALSE');
+      where.push(`submissions.roll_number = $${params.length}`);
+      where.push('submissions.archived = FALSE');
 
       if (Number.isFinite(subjectIdQuery) && subjectIdQuery > 0) {
         const canAccessSubject = await ensureStudentAssignedToSubject(req.auth.regNo, subjectIdQuery);
@@ -2774,54 +2931,67 @@ app.get('/submissions', requireAuth(['staff', 'student']), async (req, res, next
       }
     } else {
       const staffEmail = normalizeStaffEmail(req.auth.email);
+      const isSA = isSuperAdminSession(req.auth);
+
       if (rollNumberQuery) {
         params.push(rollNumberQuery);
-        where.push(`roll_number = $${params.length}`);
+        where.push(`submissions.roll_number = $${params.length}`);
       }
 
-      if (Number.isFinite(subjectIdQuery) && subjectIdQuery > 0) {
-        const canAccessSubject = await ensureStaffAssignedToSubject(staffEmail, subjectIdQuery);
-        if (!canAccessSubject) {
-          return res.status(403).json({ error: 'Forbidden' });
+      if (!isSA) {
+        if (Number.isFinite(subjectIdQuery) && subjectIdQuery > 0) {
+          const canAccessSubject = await ensureStaffAssignedToSubject(staffEmail, subjectIdQuery);
+          if (!canAccessSubject) {
+            return res.status(403).json({ error: 'Forbidden' });
+          }
         }
+
+        params.push(staffEmail);
+        where.push(
+          `EXISTS (
+            SELECT 1
+            FROM staff_subject_assignments ssa
+            WHERE ssa.staff_email = $${params.length}
+              AND ssa.subject_id = submissions.subject_id
+              AND ssa.is_active = TRUE
+          )`
+        );
+
+        params.push(staffEmail);
+        where.push(
+          `EXISTS (
+            SELECT 1
+            FROM student_staff_subject_assignments sssa
+            WHERE sssa.staff_email = $${params.length}
+              AND sssa.reg_no = submissions.roll_number
+              AND sssa.subject_id = submissions.subject_id
+              AND sssa.is_active = TRUE
+          )`
+        );
       }
 
-      params.push(staffEmail);
-      where.push(
-        `EXISTS (
-           SELECT 1
-           FROM staff_subject_assignments ssa
-           WHERE ssa.staff_email = $${params.length}
-             AND ssa.subject_id = submissions.subject_id
-             AND ssa.is_active = TRUE
-         )`
-      );
-
-      params.push(staffEmail);
-      where.push(
-        `EXISTS (
-           SELECT 1
-           FROM student_staff_subject_assignments sssa
-           WHERE sssa.staff_email = $${params.length}
-             AND sssa.reg_no = submissions.roll_number
-             AND sssa.subject_id = submissions.subject_id
-             AND sssa.is_active = TRUE
-         )`
-      );
+      if (streamQuery && streamQuery !== 'all') {
+        params.push(streamQuery);
+        where.push(`EXISTS (SELECT 1 FROM students s WHERE s.reg_no = submissions.roll_number AND s.stream = $${params.length})`);
+      }
+      if (sectionQuery && sectionQuery !== 'all') {
+        params.push(sectionQuery);
+        where.push(`EXISTS (SELECT 1 FROM students s WHERE s.reg_no = submissions.roll_number AND s.section = $${params.length})`);
+      }
 
       if (!includeArchived) {
-        where.push('archived = FALSE');
+        where.push('submissions.archived = FALSE');
       }
     }
 
     if (Number.isFinite(subjectIdQuery) && subjectIdQuery > 0) {
       params.push(subjectIdQuery);
-      where.push(`subject_id = $${params.length}`);
+      where.push(`submissions.subject_id = $${params.length}`);
     }
 
     if (status) {
       params.push(status);
-      where.push(`status = $${params.length}`);
+      where.push(`submissions.status = $${params.length}`);
     }
 
     const query = `
@@ -3102,6 +3272,15 @@ app.patch('/submissions/:id', requireAuth(['staff', 'student']), async (req, res
     if (req.auth.role === 'student') {
       params.push(req.auth.regNo);
       whereClause += ` AND roll_number = $${params.length} AND status = 'pending'`;
+    } else if (req.auth.role === 'staff' && !isSuperAdminSession(req.auth)) {
+      params.push(normalizeStaffEmail(req.auth.email));
+      whereClause += ` AND EXISTS (
+        SELECT 1 FROM student_staff_subject_assignments sssa
+        WHERE sssa.staff_email = $${params.length}
+          AND sssa.reg_no = submissions.roll_number
+          AND sssa.subject_id = submissions.subject_id
+          AND sssa.is_active = TRUE
+      )`;
     }
 
     const result = await pool.query(
@@ -3337,6 +3516,195 @@ app.post('/upload', requireAuth('student'), upload.array('files', 20), async (re
     });
   } catch (err) {
     console.error('[UPLOAD] DATABASE ERROR:', err.message);
+    next(err);
+  }
+});
+
+app.post('/student/ppts', requireAuth('student'), materialUpload.single('file'), async (req, res, next) => {
+  try {
+    const regNo = normalizeRegNo(req.auth.regNo);
+    const subjectId = Number(req.body?.subjectId);
+    const rawTitle = String(req.body?.title || '').trim();
+    const file = req.file;
+
+    if (!Number.isFinite(subjectId) || subjectId <= 0 || !file) {
+      return res.status(400).json({ error: 'subjectId and PPT file are required' });
+    }
+
+    const canSubmit = await ensureStudentAssignedToSubject(regNo, subjectId);
+    if (!canSubmit) {
+      return res.status(403).json({ error: 'Student is not assigned to this subject' });
+    }
+
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    const mime = String(file.mimetype || '').toLowerCase();
+    const extOk = allowedStudentPptExtensions.has(ext);
+    const mimeOk = allowedStudentPptMimeTypes.has(mime);
+    if (!extOk || !mimeOk) {
+      return res.status(400).json({ error: 'Only .ppt or .pptx files are allowed' });
+    }
+
+    const subjectCode = (await getSubjectCodeById(subjectId)) || `subject-${subjectId}`;
+    const storedName = createStoredUploadName(file.originalname);
+    const folderPath = [
+      'students',
+      sanitizePathSegment(regNo),
+      'presentations',
+      sanitizePathSegment(subjectCode),
+    ].join('/');
+    const fileUrl = toUploadsPublicUrl(folderPath, storedName);
+
+    const currentQuota = await upsertStudentQuota(regNo);
+    const requestedBytes = Number(file.size || 0);
+    if ((currentQuota.usedBytes + requestedBytes) > currentQuota.quotaBytes) {
+      return res.status(409).json({
+        error: 'Student storage quota exceeded',
+        quota: {
+          usedBytes: currentQuota.usedBytes,
+          requestedBytes,
+          remainingBytes: currentQuota.remainingBytes,
+          totalBytes: currentQuota.quotaBytes,
+        },
+      });
+    }
+
+    writeFileToStorage(folderPath, storedName, file.buffer);
+
+    await pool.query(
+      `INSERT INTO uploads (stored_name, original_name, mime_type, size_bytes, file_url, folder_path, file_data, owner_reg_no, upload_kind, subject_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'student_ppt', $9)
+       ON CONFLICT (stored_name)
+       DO UPDATE SET original_name = EXCLUDED.original_name,
+                     mime_type = EXCLUDED.mime_type,
+                     size_bytes = EXCLUDED.size_bytes,
+                     file_url = EXCLUDED.file_url,
+                     folder_path = EXCLUDED.folder_path,
+                     file_data = EXCLUDED.file_data,
+                     owner_reg_no = EXCLUDED.owner_reg_no,
+                     upload_kind = EXCLUDED.upload_kind,
+                     subject_id = EXCLUDED.subject_id`,
+      [storedName, file.originalname, file.mimetype, file.size, fileUrl, folderPath, file.buffer, regNo, subjectId]
+    );
+
+    const updatedQuota = await upsertStudentQuota(regNo);
+    const title = rawTitle || path.parse(file.originalname || 'Presentation').name;
+
+    res.status(201).json({
+      ok: true,
+      ppt: {
+        title,
+        storedName,
+        originalName: file.originalname,
+        fileUrl,
+        subjectId,
+        sizeBytes: Number(file.size || 0),
+      },
+      quota: {
+        usedBytes: updatedQuota.usedBytes,
+        remainingBytes: updatedQuota.remainingBytes,
+        totalBytes: updatedQuota.quotaBytes,
+      },
+    });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/student/ppts', requireAuth('student'), async (req, res, next) => {
+  try {
+    const regNo = normalizeRegNo(req.auth.regNo);
+    const subjectId = req.query?.subjectId ? Number(req.query.subjectId) : null;
+    const params = [regNo];
+    const where = [
+      'u.owner_reg_no = $1',
+      `u.upload_kind = 'student_ppt'`,
+    ];
+
+    if (Number.isFinite(subjectId) && subjectId > 0) {
+      const canAccessSubject = await ensureStudentAssignedToSubject(regNo, subjectId);
+      if (!canAccessSubject) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+      params.push(subjectId);
+      where.push(`u.subject_id = $${params.length}`);
+    }
+
+    const result = await pool.query(
+      `SELECT u.stored_name, u.original_name, u.file_url, u.size_bytes, u.created_at,
+              u.subject_id, sub.code AS subject_code, sub.name AS subject_name
+       FROM uploads u
+       LEFT JOIN subjects sub ON sub.id = u.subject_id
+       WHERE ${where.join(' AND ')}
+       ORDER BY u.created_at DESC`,
+      params
+    );
+
+    res.json({ ppts: result.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/staff/student-ppts', requireAuth('staff'), async (req, res, next) => {
+  try {
+    const staffEmail = normalizeStaffEmail(req.auth.email);
+    const subjectId = req.query?.subjectId ? Number(req.query.subjectId) : null;
+    const isSA = isSuperAdminSession(req.auth);
+
+    const params = [];
+    const where = [`u.upload_kind = 'student_ppt'`];
+
+    if (Number.isFinite(subjectId) && subjectId > 0) {
+      if (!isSA) {
+        const canAccessSubject = await ensureStaffAssignedToSubject(staffEmail, subjectId);
+        if (!canAccessSubject) {
+          return res.status(403).json({ error: 'Forbidden' });
+        }
+      }
+      params.push(subjectId);
+      where.push(`u.subject_id = $${params.length}`);
+    }
+
+    if (!isSA) {
+      params.push(staffEmail);
+      where.push(
+        `EXISTS (
+          SELECT 1
+          FROM staff_subject_assignments ssa
+          WHERE ssa.staff_email = $${params.length}
+            AND ssa.subject_id = u.subject_id
+            AND ssa.is_active = TRUE
+        )`
+      );
+
+      params.push(staffEmail);
+      where.push(
+        `EXISTS (
+          SELECT 1
+          FROM student_staff_subject_assignments sssa
+          WHERE sssa.staff_email = $${params.length}
+            AND sssa.reg_no = u.owner_reg_no
+            AND sssa.subject_id = u.subject_id
+            AND sssa.is_active = TRUE
+        )`
+      );
+    }
+
+    const result = await pool.query(
+      `SELECT u.stored_name, u.original_name, u.file_url, u.size_bytes, u.created_at,
+              u.owner_reg_no, s.full_name AS student_name,
+              u.subject_id, sub.code AS subject_code, sub.name AS subject_name
+       FROM uploads u
+       LEFT JOIN students s ON s.reg_no = u.owner_reg_no
+       LEFT JOIN subjects sub ON sub.id = u.subject_id
+       WHERE ${where.join(' AND ')}
+       ORDER BY u.created_at DESC
+       LIMIT 500`,
+      params
+    );
+
+    res.json({ ppts: result.rows });
+  } catch (err) {
     next(err);
   }
 });
@@ -3803,15 +4171,16 @@ async function syncStudentsFromFile() {
   try {
     await client.query('BEGIN');
     for (const [regNo, fullName] of entries) {
-      const section = inferSectionFromRegNo(regNo) || null;
+      const { stream, section } = inferStudentMetadata(regNo);
       const upsertStudent = await client.query(
         `INSERT INTO students (reg_no, full_name, stream, section)
-         VALUES ($1, $2, NULL, $3)
+         VALUES ($1, $2, $3, $4)
          ON CONFLICT (reg_no)
          DO UPDATE SET full_name = EXCLUDED.full_name,
+                       stream = COALESCE(students.stream, EXCLUDED.stream),
                        section = COALESCE(students.section, EXCLUDED.section)
          RETURNING (xmax = 0) AS inserted`,
-        [regNo, fullName, section]
+        [regNo, fullName, stream, section]
       );
 
       await client.query(
@@ -3843,12 +4212,11 @@ async function upsertDefaultStaffAccount() {
      ON CONFLICT (email)
      DO UPDATE SET full_name = EXCLUDED.full_name,
                    role = EXCLUDED.role,
-                   password_hash = EXCLUDED.password_hash,
-                   is_active = TRUE,
+                   is_active = COALESCE(staff_accounts.is_active, EXCLUDED.is_active),
                    updated_at = NOW()`,
     [staffDefaultEmail, staffDefaultName, staffDefaultRole, hashPassword(staffDefaultPassword)]
   );
-  console.log(`Upserted default staff account: ${staffDefaultEmail}`);
+  console.log(`Upserted default staff account (preserved password if exists): ${staffDefaultEmail}`);
 }
 
 async function upsertUHVStaffAccount() {
@@ -3858,12 +4226,11 @@ async function upsertUHVStaffAccount() {
      ON CONFLICT (email)
      DO UPDATE SET full_name = EXCLUDED.full_name,
                    role = EXCLUDED.role,
-                   password_hash = EXCLUDED.password_hash,
-                   is_active = TRUE,
+                   is_active = COALESCE(staff_accounts.is_active, EXCLUDED.is_active),
                    updated_at = NOW()`,
     [uhvStaffEmail, uhvStaffName, uhvStaffRole, hashPassword(uhvStaffPassword)]
   );
-  console.log(`Upserted UHV staff account: ${uhvStaffEmail}`);
+  console.log(`Upserted UHV staff account (preserved password if exists): ${uhvStaffEmail}`);
 }
 
 async function upsertDefaultSuperAdminAccount() {
@@ -3873,12 +4240,11 @@ async function upsertDefaultSuperAdminAccount() {
      ON CONFLICT (email)
      DO UPDATE SET full_name = EXCLUDED.full_name,
                    role = EXCLUDED.role,
-                   password_hash = EXCLUDED.password_hash,
-                   is_active = TRUE,
+                   is_active = COALESCE(staff_accounts.is_active, EXCLUDED.is_active),
                    updated_at = NOW()`,
     [superAdminDefaultEmail, superAdminDefaultName, superAdminDefaultRole, hashPassword(superAdminDefaultPassword)]
   );
-  console.log(`Upserted default super admin account: ${superAdminDefaultEmail}`);
+  console.log(`Upserted default super admin account (preserved password if exists): ${superAdminDefaultEmail}`);
 }
 
 async function ensureDefaultSubject() {
@@ -3887,7 +4253,7 @@ async function ensureDefaultSubject() {
      VALUES ('CHEMISTRY', 'Chemistry', TRUE)
      ON CONFLICT (code)
      DO UPDATE SET name = EXCLUDED.name,
-                   is_active = TRUE,
+                   is_active = COALESCE(subjects.is_active, EXCLUDED.is_active),
                    updated_at = NOW()`
   );
   // Ensure UHV subject exists
@@ -3896,7 +4262,7 @@ async function ensureDefaultSubject() {
      VALUES ('UHV', 'Universal Human Values', TRUE)
      ON CONFLICT (code)
      DO UPDATE SET name = EXCLUDED.name,
-                   is_active = TRUE,
+                   is_active = COALESCE(subjects.is_active, EXCLUDED.is_active),
                    updated_at = NOW()`
   );
 }
@@ -3925,7 +4291,7 @@ async function ensureBaselineAssignments() {
      SELECT s.reg_no, $1, TRUE
      FROM students s
      ON CONFLICT (reg_no, subject_id)
-     DO UPDATE SET is_active = TRUE, updated_at = NOW()`,
+     DO NOTHING`,
     [defaultSubjectId]
   );
 
@@ -3935,7 +4301,7 @@ async function ensureBaselineAssignments() {
      FROM staff_accounts st
      WHERE st.is_active = TRUE
      ON CONFLICT (staff_email, subject_id)
-     DO UPDATE SET is_active = TRUE, updated_at = NOW()`,
+     DO NOTHING`,
     [defaultSubjectId]
   );
 
@@ -3945,7 +4311,7 @@ async function ensureBaselineAssignments() {
      FROM students s
      JOIN staff_accounts st ON st.is_active = TRUE
      ON CONFLICT (reg_no, staff_email, subject_id)
-     DO UPDATE SET is_active = TRUE, updated_at = NOW()`,
+     DO NOTHING`,
     [defaultSubjectId]
   );
 }
@@ -3965,7 +4331,7 @@ async function ensureUHVAssignments() {
      SELECT s.reg_no, $1, TRUE
      FROM students s
      ON CONFLICT (reg_no, subject_id)
-     DO UPDATE SET is_active = TRUE, updated_at = NOW()`,
+     DO NOTHING`,
     [uhvSubjectId]
   );
 
@@ -3974,7 +4340,7 @@ async function ensureUHVAssignments() {
     `INSERT INTO staff_subject_assignments (staff_email, subject_id, is_active)
      VALUES ($1, $2, TRUE)
      ON CONFLICT (staff_email, subject_id)
-     DO UPDATE SET is_active = TRUE, updated_at = NOW()`,
+     DO NOTHING`,
     [uhvStaffEmail, uhvSubjectId]
   );
 
@@ -3984,7 +4350,7 @@ async function ensureUHVAssignments() {
      SELECT s.reg_no, $1, $2, TRUE
      FROM students s
      ON CONFLICT (reg_no, staff_email, subject_id)
-     DO UPDATE SET is_active = TRUE, updated_at = NOW()`,
+     DO NOTHING`,
     [uhvStaffEmail, uhvSubjectId]
   );
 
@@ -4040,15 +4406,23 @@ async function enforceDefaultPasswordForFirstLoginAccounts() {
   }
 }
 
-async function backfillStudentSectionFromRegNo() {
+async function backfillStudentMetadataFromRegNo() {
   await pool.query(
     `UPDATE students
-     SET section = CASE
-       WHEN reg_no LIKE '%BAD%' OR reg_no LIKE '%BAM%' THEN 'A7'
-       WHEN reg_no LIKE '%BCS%' OR reg_no LIKE '%BIT%' OR reg_no LIKE '%BSC%' THEN 'A3'
-       ELSE section
-     END
-     WHERE section IS NULL OR BTRIM(section) = ''`
+     SET stream = CASE
+           WHEN reg_no LIKE '%BAD%' THEN 'AIDS-A'
+           WHEN reg_no LIKE '%BAM%' THEN 'AIDS-M'
+           WHEN reg_no LIKE '%BCS%' THEN 'CSE-A'
+           WHEN reg_no LIKE '%BIT%' THEN 'IT'
+           WHEN reg_no LIKE '%BSC%' THEN 'CSBS'
+           ELSE stream
+         END,
+         section = CASE
+           WHEN reg_no LIKE '%BAD%' OR reg_no LIKE '%BAM%' THEN 'A7'
+           WHEN reg_no LIKE '%BCS%' OR reg_no LIKE '%BIT%' OR reg_no LIKE '%BSC%' THEN 'A3'
+           ELSE section
+         END
+     WHERE stream IS NULL OR section IS NULL OR BTRIM(COALESCE(section, '')) = ''`
   );
 }
 
@@ -4106,7 +4480,7 @@ async function bootstrap() {
   await ensureSchema();
   await ensureDefaultSubject();
   await syncStudentsOnApiStartup();
-  await backfillStudentSectionFromRegNo();
+  await backfillStudentMetadataFromRegNo();
   await backfillMissingStudentAuth();
   await enforceDefaultPasswordForFirstLoginAccounts();
   await upsertDefaultStaffAccount();
@@ -4119,8 +4493,12 @@ async function bootstrap() {
   } else {
     console.log('Startup baseline assignments are disabled (BASELINE_ASSIGNMENTS_ON_STARTUP=false)');
   }
-  // Always ensure UHV assignments are set up
-  await ensureUHVAssignments();
+  if (uhvAssignmentsOnStartup) {
+    await ensureUHVAssignments();
+    console.log('Startup UHV assignments are enabled (UHV_ASSIGNMENTS_ON_STARTUP=true)');
+  } else {
+    console.log('Startup UHV assignments are disabled (UHV_ASSIGNMENTS_ON_STARTUP=false)');
+  }
   await syncAllStudentQuotas();
   dbReady = true;
 

@@ -10,8 +10,14 @@ function getStaffAuthHeaders() {
 
 let submissionsCache = [];
 const getSubmissions = () => submissionsCache;
-let trackerClassFilter = 'all';
-let recordClassFilter = 'all';
+let trackerStreamFilter = 'all';
+let trackerSectionFilter = 'all';
+let recordStreamFilter = 'all';
+let recordSectionFilter = 'all';
+
+let currentSubjectId = null;
+let assignedStudents = [];
+let assignedSubjects = [];
 
 const A7_PREFIXES = new Set(['BAD', 'BAM']);
 const A3_PREFIXES = new Set(['BCS', 'BIT', 'BSC']);
@@ -51,6 +57,7 @@ async function apiFetchSubmissions() {
     _ts: String(Date.now()),
     _uuid: Math.random().toString(36),
   });
+  if (currentSubjectId) params.append('subjectId', currentSubjectId);
   const res = await fetch(`/api/submissions?${params.toString()}`, {
     headers: {
       ...getStaffAuthHeaders(),
@@ -103,10 +110,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   initLogout();
   initLightbox();
   initClearData();
+  await initSubjectSelector();
   initAutoRefresh();
   initStaffCommsPanel();
-  await refreshSubmissions();
-  renderAll();
+  // refreshSubmissions and renderAll are now handled inside initSubjectSelector or its change handler
 });
 
 async function staffApiJson(url, options = {}) {
@@ -118,6 +125,80 @@ async function staffApiJson(url, options = {}) {
   const payload = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(payload?.error || `Request failed (${res.status})`);
   return payload;
+}
+
+async function initSubjectSelector() {
+  const selector = document.getElementById('staffSubjectSelector');
+  if (!selector) return;
+
+  try {
+    const payload = await staffApiJson('/api/staff/subjects');
+    assignedSubjects = payload.subjects || [];
+
+    if (assignedSubjects.length === 0) {
+      selector.innerHTML = '<option value="">No subjects assigned</option>';
+      selector.style.display = 'block';
+      selector.disabled = true;
+      return;
+    }
+
+    selector.innerHTML = assignedSubjects.map(s => `<option value="${s.id}">${s.code} - ${s.name}</option>`).join('');
+    selector.style.display = 'block';
+    
+    // Set default subject
+    currentSubjectId = Number(selector.value);
+    
+    selector.addEventListener('change', async () => {
+      currentSubjectId = Number(selector.value);
+      await refreshAllForSubject();
+    });
+
+    await refreshAllForSubject();
+  } catch (err) {
+    console.error('Failed to load subjects:', err);
+    selector.innerHTML = '<option value="">Error loading subjects</option>';
+    selector.style.display = 'block';
+  }
+}
+
+function populateFilters() {
+  const streams = new Set(assignedStudents.map(s => s.stream).filter(Boolean));
+  const sections = new Set(assignedStudents.map(s => s.section).filter(Boolean));
+
+  const updateSelect = (id, items, label) => {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    const current = sel.value;
+    sel.innerHTML = `<option value="all">Any ${label}</option>` +
+      Array.from(items).sort().map(v => `<option value="${v}">${v}</option>`).join('');
+    if (Array.from(items).includes(current)) sel.value = current;
+    else sel.value = 'all';
+  };
+
+  updateSelect('trackerStreamFilter', streams, 'Department');
+  updateSelect('trackerSectionFilter', sections, 'Section');
+  updateSelect('recordStreamFilter', streams, 'Department');
+  updateSelect('recordSectionFilter', sections, 'Section');
+  
+  // Update state variables to match current selections
+  trackerStreamFilter = document.getElementById('trackerStreamFilter')?.value || 'all';
+  trackerSectionFilter = document.getElementById('trackerSectionFilter')?.value || 'all';
+  recordStreamFilter = document.getElementById('recordStreamFilter')?.value || 'all';
+  recordSectionFilter = document.getElementById('recordSectionFilter')?.value || 'all';
+}
+
+async function refreshAllForSubject() {
+  if (!currentSubjectId) return;
+  try {
+    const payload = await staffApiJson(`/api/staff/students?subjectId=${currentSubjectId}`);
+    assignedStudents = payload.students || [];
+    populateFilters();
+    await refreshSubmissions();
+    renderAll();
+  } catch (err) {
+    console.error('Failed to load students/submissions for subject:', err);
+    showToast('Failed to load data for selected subject', 'error');
+  }
 }
 
 function initStaffCommsPanel() {
@@ -189,6 +270,15 @@ function initStaffCommsPanel() {
         <div id="staffMaterialList" style="max-height:220px;overflow:auto;font-size:0.8rem;color:var(--text-muted);"></div>
       </form>
     </div>
+    <div style="display:grid;gap:12px;margin-top:12px;">
+      <div class="record-card" style="padding:12px;">
+        <div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;">
+          <div style="font-weight:700;">Student PPT Uploads</div>
+          <button class="clear-btn" type="button" id="staffStudentPptRefreshBtn">Refresh PPT List</button>
+        </div>
+        <div id="staffStudentPptList" style="max-height:260px;overflow:auto;font-size:0.8rem;color:var(--text-muted);margin-top:8px;"></div>
+      </div>
+    </div>
   `;
   dashboardTab.appendChild(card);
 
@@ -216,6 +306,44 @@ function initStaffCommsPanel() {
           </div>
         </div>
       `).join('');
+    } catch (err) {
+      list.innerHTML = `<span style="color:#ffb8c7;">${esc(err.message || 'Failed')}</span>`;
+    }
+  }
+
+  async function refreshStudentPpts() {
+    const list = card.querySelector('#staffStudentPptList');
+    if (!list) return;
+    list.innerHTML = 'Loading...';
+
+    const qs = Number.isFinite(currentSubjectId) && currentSubjectId > 0
+      ? `?subjectId=${encodeURIComponent(currentSubjectId)}`
+      : '';
+
+    try {
+      const payload = await staffApiJson(`/api/staff/student-ppts${qs}`);
+      const rows = payload.ppts || [];
+      if (!rows.length) {
+        list.innerHTML = 'No student PPT uploads for this subject yet.';
+        return;
+      }
+
+      list.innerHTML = rows.slice(0, 80).map((row) => {
+        const href = String(row.file_url || '').trim() || '#';
+        const student = `${String(row.owner_reg_no || '').trim()} - ${String(row.student_name || '').trim()}`.trim();
+        const subject = `${String(row.subject_code || '').trim()} (${String(row.subject_name || '').trim()})`;
+        const created = row.created_at ? new Date(row.created_at).toLocaleString() : '-';
+        return `
+          <div style="padding:7px 0;border-bottom:1px solid rgba(255,255,255,0.08);">
+            <div style="font-weight:600;color:var(--text);">${esc(row.original_name || 'PPT Upload')}</div>
+            <div>${esc(student)} · ${esc(subject)}</div>
+            <div>${esc(created)} · ${esc(formatBytes(row.size_bytes || 0))}</div>
+            <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;">
+              <a class="t-grade-btn" style="padding:4px 8px;font-size:0.72rem;text-decoration:none;" href="${esc(href)}" target="_blank" rel="noopener">Open PPT</a>
+            </div>
+          </div>
+        `;
+      }).join('');
     } catch (err) {
       list.innerHTML = `<span style="color:#ffb8c7;">${esc(err.message || 'Failed')}</span>`;
     }
@@ -411,13 +539,26 @@ function initStaffCommsPanel() {
   });
 
   card.querySelector('#staffCommsRefreshBtn').addEventListener('click', async () => {
-    await Promise.all([refreshAnnouncements(), refreshQaThreads(), refreshMaterials()]);
+    await Promise.all([refreshAnnouncements(), refreshQaThreads(), refreshMaterials(), refreshStudentPpts()]);
     showToast('Communication panel refreshed', 'info');
   });
+
+  card.querySelector('#staffStudentPptRefreshBtn')?.addEventListener('click', async () => {
+    await refreshStudentPpts();
+    showToast('Student PPT list refreshed', 'info');
+  });
+
+  const subjectSelector = document.getElementById('staffSubjectSelector');
+  if (subjectSelector) {
+    subjectSelector.addEventListener('change', () => {
+      refreshStudentPpts();
+    });
+  }
 
   refreshAnnouncements();
   refreshQaThreads();
   refreshMaterials();
+  refreshStudentPpts();
 }
 
 // ── Auto-refresh (poll + cross-tab storage events) ────────────
@@ -425,7 +566,7 @@ let _lastDataSignature = '';
 function getSubmissionsSignature() {
   return JSON.stringify(
     getSubmissions()
-      .map((s) => `${s.id}|${s.status}|${s.archived ? 1 : 0}|${s.marks ?? ''}|${s.submittedAt}|${s.gradedAt || ''}`)
+      .map((s) => `${s.id}|${s.status}|${s.archived ? 1 : 0}|${s.marks ?? ''}|${s.submittedAt}|${s.gradedAt || ''}|${s.subjectId}`)
       .sort()
   );
 }
@@ -531,33 +672,21 @@ function initTabs() {
   const sea = document.getElementById('recordSearch');
   if (sea) sea.addEventListener('input', renderRecords);
 
-  const trackerFilter = document.getElementById('trackerClassFilter');
-  if (trackerFilter) {
-    trackerFilter.addEventListener('change', () => {
-      trackerClassFilter = trackerFilter.value;
-      renderStudentTracker();
-    });
-  }
+  const tStream = document.getElementById('trackerStreamFilter');
+  if (tStream) tStream.addEventListener('change', () => { trackerStreamFilter = tStream.value; renderStudentTracker(); });
+  const tSection = document.getElementById('trackerSectionFilter');
+  if (tSection) tSection.addEventListener('change', () => { trackerSectionFilter = tSection.value; renderStudentTracker(); });
 
-  const recordFilter = document.getElementById('recordClassFilter');
-  if (recordFilter) {
-    recordFilter.addEventListener('change', () => {
-      recordClassFilter = recordFilter.value;
-      renderRecords();
-    });
-  }
+  const rStream = document.getElementById('recordStreamFilter');
+  if (rStream) rStream.addEventListener('change', () => { recordStreamFilter = rStream.value; renderRecords(); });
+  const rSection = document.getElementById('recordSectionFilter');
+  if (rSection) rSection.addEventListener('change', () => { recordSectionFilter = rSection.value; renderRecords(); });
 }
 
-function getSectionFromRegNo(regNo) {
-  const prefix = String(regNo || '').slice(6, 9).toUpperCase();
-  if (A7_PREFIXES.has(prefix)) return 'A7';
-  if (A3_PREFIXES.has(prefix)) return 'A3';
-  return 'other';
-}
-
-function matchesSectionFilter(regNo, sectionFilter) {
-  if (sectionFilter === 'all') return true;
-  return getSectionFromRegNo(regNo) === sectionFilter;
+function matchesFilters(student, streamVal, sectionVal) {
+  const sMatch = streamVal === 'all' || String(student.stream || '').trim() === streamVal;
+  const cMatch = sectionVal === 'all' || String(student.section || '').trim() === sectionVal;
+  return sMatch && cMatch;
 }
 
 function switchTab(tab) {
@@ -614,8 +743,9 @@ function renderStudentTracker() {
     historyByRegNo[regNo].sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt));
   });
 
-  const regNos = Object.keys(STUDENTS_DB)
-    .filter(regNo => matchesSectionFilter(regNo, trackerClassFilter))
+  const regNos = assignedStudents
+    .filter(s => matchesFilters(s, trackerStreamFilter, trackerSectionFilter))
+    .map(s => s.reg_no)
     .sort();
   const submitted = regNos.filter(r => (historyByRegNo[r] || []).length > 0).length;
   const notYet = regNos.length - submitted;
@@ -630,7 +760,8 @@ function renderStudentTracker() {
 
   el.innerHTML = '';
   regNos.forEach((regNo, idx) => {
-    const name = STUDENTS_DB[regNo];
+    const studentObj = assignedStudents.find(s => s.reg_no === regNo);
+    const name = studentObj ? studentObj.full_name : (STUDENTS_DB[regNo] || 'Unknown');
     const tests = historyByRegNo[regNo] || [];
     const sub = tests[0] || null;
     const row = document.createElement('div');
@@ -680,14 +811,16 @@ function renderRecords() {
 
   const q = (document.getElementById('recordSearch')?.value || '').toLowerCase();
 
-  const regNos = Object.keys(STUDENTS_DB)
-    .filter(regNo => matchesSectionFilter(regNo, recordClassFilter))
+  const regNos = assignedStudents
+    .filter(s => matchesFilters(s, recordStreamFilter, recordSectionFilter))
+    .map(s => s.reg_no)
     .sort();
   el.innerHTML = '';
 
   let count = 0;
   regNos.forEach(regNo => {
-    const name = STUDENTS_DB[regNo];
+    const studentObj = assignedStudents.find(s => s.reg_no === regNo);
+    const name = studentObj ? studentObj.full_name : (STUDENTS_DB[regNo] || 'Unknown');
     if (q && !name.toLowerCase().includes(q) && !regNo.toLowerCase().includes(q)) return;
     count++;
 
@@ -744,7 +877,9 @@ function renderRecords() {
 
 // ── Reset Student Password (Staff Only) ───────────────────────
 window.resetStudentPassword = function (regNo) {
-  const newPw = prompt(`Enter new password for ${regNo} (${STUDENTS_DB[regNo]}):`, regNo);
+  const studentObj = assignedStudents.find(s => s.reg_no === regNo);
+  const name = studentObj ? studentObj.full_name : (STUDENTS_DB[regNo] || regNo);
+  const newPw = prompt(`Enter new password for ${regNo} (${name}):`, regNo);
   if (!newPw) return;
   setStudentPassword(regNo, newPw);
   markPasswordChanged(regNo);
@@ -944,6 +1079,18 @@ function timeAgo(d) {
   if (s < 60) return 'just now'; if (s < 3600) return Math.floor(s / 60) + 'm ago';
   if (s < 86400) return Math.floor(s / 3600) + 'h ago';
   return Math.floor(s / 86400) + 'd ago';
+}
+function formatBytes(bytes) {
+  const value = Number(bytes || 0);
+  if (!Number.isFinite(value) || value <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let idx = 0;
+  let current = value;
+  while (current >= 1024 && idx < units.length - 1) {
+    current /= 1024;
+    idx += 1;
+  }
+  return `${current.toFixed(current >= 100 ? 0 : current >= 10 ? 1 : 2)} ${units[idx]}`;
 }
 function animNum(id, target) {
   const el = document.getElementById(id); if (!el) return;

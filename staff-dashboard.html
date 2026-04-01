@@ -105,6 +105,9 @@
       </button>
       <div class="topbar-title" id="topbarTitle">Dashboard</div>
       <div class="topbar-actions">
+        <select id="staffSubjectSelector" class="filter-select" style="margin-right:10px; min-width:150px; display:none;">
+          <option value="">Loading Subjects...</option>
+        </select>
         <button class="icon-btn" id="refreshBtn" title="Refresh">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
             <polyline points="23 4 23 10 17 10" />
@@ -170,10 +173,11 @@
             <span class="tracker-pill tp-left">Not Yet: <strong id="trackerLeft">63</strong></span>
           </div>
           <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-            <select id="trackerClassFilter" class="filter-select" title="Filter by class section">
-              <option value="all">All Classes</option>
-              <option value="A7">A7</option>
-              <option value="A3">A3</option>
+            <select id="trackerStreamFilter" class="filter-select" title="Filter by Department/Stream">
+              <option value="all">All Departments</option>
+            </select>
+            <select id="trackerSectionFilter" class="filter-select" title="Filter by Class Section">
+              <option value="all">All Sections</option>
             </select>
           </div>
           <button class="clear-btn" id="downloadGradedReportBtn" title="Download full graded report">📊 Download
@@ -206,10 +210,11 @@
             </svg>
             <input type="text" id="recordSearch" placeholder="Search name or register no..." />
           </div>
-          <select id="recordClassFilter" class="filter-select" title="Filter by class section">
-            <option value="all">All Classes</option>
-            <option value="A7">A7</option>
-            <option value="A3">A3</option>
+          <select id="recordStreamFilter" class="filter-select" title="Filter by Department/Stream">
+            <option value="all">All Departments</option>
+          </select>
+          <select id="recordSectionFilter" class="filter-select" title="Filter by Class Section">
+            <option value="all">All Sections</option>
           </select>
         </div>
         <div class="records-container" id="recordsList"></div>

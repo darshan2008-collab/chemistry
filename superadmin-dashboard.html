@@ -6,9 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Super Admin Dashboard - Unitest Portal</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link
-        href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Syne:wght@600;700;800&display=swap"
-        rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
     <link rel="stylesheet" href="superadmin-dashboard.css" />
 </head>
 
@@ -24,64 +22,87 @@
         </header>
 
         <nav class="admin-menu" aria-label="Super Admin Sections">
-            <button type="button" class="admin-menu-btn active" data-menu-target="staff" aria-selected="true">Staff</button>
-            <button type="button" class="admin-menu-btn" data-menu-target="assignments" aria-selected="false">Assignments</button>
-            <button type="button" class="admin-menu-btn" data-menu-target="operations" aria-selected="false">Operations</button>
+            <button type="button" class="admin-menu-btn active" data-menu-target="staff" aria-selected="true">Staff & Imports</button>
+            <button type="button" class="admin-menu-btn" data-menu-target="assignments" aria-selected="false">Teacher Assignments</button>
+            <button type="button" class="admin-menu-btn" data-menu-target="operations" aria-selected="false">Operations & Subjects</button>
         </nav>
 
-        <section class="menu-panel active" data-panel="staff">
-
+        <!-- STAFF PANEL -->
+        <section class="menu-panel active" data-panel="staff" id="panel-staff">
             <div class="grid">
                 <section class="card">
-                    <h2>Create / Update Staff</h2>
+                    <h2>Manage Staff Accounts</h2>
                     <form id="staffForm" class="form" novalidate>
-                        <label for="staffEmail">Username</label>
-                        <input id="staffEmail" type="text" placeholder="e.g. shreekesavan" required />
-
-                        <label for="staffName">Full Name</label>
-                        <input id="staffName" type="text" placeholder="Staff full name" required />
-
-                        <label for="staffRole">Role</label>
-                        <input id="staffRole" type="text" value="Chemistry Teacher" required />
-
-                        <label for="staffPassword">Password</label>
-                        <input id="staffPassword" type="text" placeholder="Min 6 characters" required />
-
-                        <button class="btn primary" type="submit">Save Staff Account</button>
+                        <div class="row">
+                            <div class="col">
+                                <label for="staffEmail">Username / Email</label>
+                                <input id="staffEmail" type="text" placeholder="e.g. shreekesavan" required />
+                            </div>
+                            <div class="col">
+                                <label for="staffName">Full Name</label>
+                                <input id="staffName" type="text" placeholder="Staff full name" required />
+                            </div>
+                        </div>
+                        <div class="row">
+                            <div class="col">
+                                <label for="staffRole">Role</label>
+                                <input id="staffRole" type="text" value="Chemistry Teacher" required />
+                            </div>
+                            <div class="col">
+                                <label for="staffPassword">Account Password</label>
+                                <input id="staffPassword" type="password" placeholder="Min 6 characters" required />
+                            </div>
+                        </div>
+                        <button class="btn primary" type="submit">Create / Update Staff</button>
                         <p id="staffMsg" class="msg"></p>
                     </form>
                 </section>
 
                 <section class="card">
-                    <h2>Import Students via Excel</h2>
+                    <h2>Student Batch Import</h2>
                     <form id="importForm" class="form" novalidate>
-                        <label for="stream">Default Stream (optional)</label>
-                        <input id="stream" type="text" placeholder="e.g. CSE-A" />
+                        <label for="stream">Target Department (optional)</label>
+                        <input id="stream" type="text" placeholder="e.g. AIDS-A" />
 
-                        <label for="studentFile">Excel File (.xlsx/.xls/.csv)</label>
-                        <input id="studentFile" type="file" accept=".xlsx,.xls,.csv" required />
+                        <label for="studentFile">Select Student Data (.xlsx, .csv)</label>
+                        <div class="file-drop-preview">
+                            <input id="studentFile" type="file" accept=".xlsx,.xls,.csv" required />
+                        </div>
 
-                        <button class="btn ghost" id="downloadTemplateBtn" type="button">Download Excel Template</button>
-                        <button class="btn" type="submit">Upload & Import Students</button>
-                        <p class="msg" style="margin-top:4px;color:var(--muted);">Existing register numbers are skipped and not overwritten.</p>
+                        <div class="btn-group">
+                            <button class="btn ghost" id="downloadTemplateBtn" type="button">Download Template</button>
+                            <button class="btn action" type="submit">Upload & Import</button>
+                        </div>
                         <p id="importMsg" class="msg"></p>
                     </form>
                 </section>
             </div>
 
-            <section class="card">
+            <section class="card accounts-list-card">
                 <div class="head-row">
-                    <h2>Staff Accounts</h2>
-                    <button class="btn ghost" id="refreshBtn" type="button">Refresh</button>
+                    <h2>Registered Staff Accounts</h2>
+                    <button class="btn ghost" id="refreshBtn" type="button">Sync Data</button>
                 </div>
                 <div id="staffList" class="list"></div>
             </section>
+        </section>
 
-            <section class="card actions-card">
-                <a class="btn nav" href="staff-dashboard.html">Open Staff Dashboard</a>
-                <a class="btn nav" href="grade.html">Open Grading Console</a>
-                <button id="logoutBtn" class="logout" type="button">Logout Securely</button>
-            </section>
+        <!-- ASSIGNMENTS PANEL (Populated by JS) -->
+        <section class="menu-panel" data-panel="assignments" id="panel-assignments" hidden>
+            <div id="assignmentsMount">
+                <div class="list-item"><div class="meta">Loading assignments interface...</div></div>
+            </div>
+        </section>
+
+        <!-- OPERATIONS PANEL (Populated by JS) -->
+        <section class="menu-panel" data-panel="operations" id="panel-operations" hidden>
+            <div id="operationsMount">
+                <div class="list-item"><div class="meta">Loading specialized tools...</div></div>
+            </div>
+        </section>
+
+        <section class="footer-actions">
+            <button id="logoutBtn" class="logout-btn" type="button">Logout System</button>
         </section>
     </main>
 
