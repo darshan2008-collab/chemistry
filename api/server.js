@@ -3,6 +3,7 @@ const multer = require('multer');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const bcrypt = require('bcryptjs');
 const { Pool } = require('pg');
 const XLSX = require('xlsx');
 const ExcelJS = require('exceljs');
@@ -21,6 +22,7 @@ const resyncToken = process.env.RESYNC_TOKEN || '';
 const authPepper = requiredEnv('AUTH_PEPPER');
 const sessionTtlHours = Number(process.env.AUTH_SESSION_TTL_HOURS || 24);
 const studentQuotaBytesDefault = Number(process.env.STUDENT_QUOTA_BYTES || 500 * 1024 * 1024);
+const passwordHashRounds = Math.max(Number(process.env.PASSWORD_HASH_ROUNDS || 12), 10);
 
 function requiredEnv(name) {
   const value = String(process.env[name] || '').trim();
@@ -314,8 +316,24 @@ const materialUpload = multer({
   },
 });
 
-function hashPassword(value) {
+function hashPasswordLegacy(value) {
   return crypto.createHash('sha256').update(`${String(value)}:${authPepper}`).digest('hex');
+}
+
+function isBcryptHash(hashValue) {
+  return /^\$2[aby]\$\d{2}\$/.test(String(hashValue || ''));
+}
+
+function hashPassword(value) {
+  return bcrypt.hashSync(`${String(value)}:${authPepper}`, passwordHashRounds);
+}
+
+function verifyPassword(value, passwordHash) {
+  const input = `${String(value)}:${authPepper}`;
+  if (isBcryptHash(passwordHash)) {
+    return bcrypt.compareSync(input, String(passwordHash || ''));
+  }
+  return hashPasswordLegacy(value) === String(passwordHash || '');
 }
 
 function createSession(payload) {
@@ -621,8 +639,15 @@ app.post('/auth/student/login', async (req, res, next) => {
       if (passwordTrimmed.toUpperCase() !== rowRegNo) {
         return res.status(401).json({ error: 'Use register number as password for first login' });
       }
-    } else if (hashPassword(passwordTrimmed) !== row.password_hash) {
+    } else if (!verifyPassword(passwordTrimmed, row.password_hash)) {
       return res.status(401).json({ error: 'Invalid credentials' });
+    } else if (!isBcryptHash(row.password_hash)) {
+      await pool.query(
+        `UPDATE student_auth
+         SET password_hash = $1, updated_at = NOW()
+         WHERE reg_no = $2`,
+        [hashPassword(passwordTrimmed), rowRegNo]
+      );
     }
 
     const token = createSession({ role: 'student', regNo: rowRegNo, name: row.full_name });
@@ -675,8 +700,17 @@ app.post('/auth/staff/login', async (req, res, next) => {
     }
 
     const row = result.rows[0];
-    if (hashPassword(password) !== row.password_hash) {
+    if (!verifyPassword(password, row.password_hash)) {
       return res.status(401).json({ error: 'Invalid credentials' });
+    }
+
+    if (!isBcryptHash(row.password_hash)) {
+      await pool.query(
+        `UPDATE staff_accounts
+         SET password_hash = $1, updated_at = NOW()
+         WHERE email = $2`,
+        [hashPassword(password), row.email]
+      );
     }
 
     const token = createSession({ role: 'staff', staffRole: row.role, roleName: row.role, email: row.email, name: row.full_name });
