@@ -697,6 +697,26 @@ function normalizeSubjectCode(value) {
   return String(value || '').trim().toUpperCase();
 }
 
+async function buildSubjectCodeFromName(name) {
+  const raw = normalizeSubjectCode(name)
+    .replace(/[^A-Z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+    .slice(0, 20);
+  const base = raw || 'SUBJECT';
+
+  for (let i = 0; i < 500; i += 1) {
+    const suffix = i === 0 ? '' : `_${i + 1}`;
+    const candidate = `${base}${suffix}`;
+    const exists = await pool.query(
+      `SELECT 1 FROM subjects WHERE code = $1 LIMIT 1`,
+      [candidate]
+    );
+    if (!exists.rows.length) return candidate;
+  }
+
+  return `${base}_${Date.now()}`;
+}
+
 function defaultPermissionsForRole(roleName) {
   const role = String(roleName || '').trim().toLowerCase();
   if (role === 'super admin' || role === 'superadmin') {
@@ -1379,11 +1399,12 @@ app.get('/admin/subjects', requireSuperAdmin, async (_req, res, next) => {
 
 app.post('/admin/subjects', requireSuperAdmin, async (req, res, next) => {
   try {
-    const code = normalizeSubjectCode(req.body?.code);
+    const requestedCode = normalizeSubjectCode(req.body?.code);
     const name = String(req.body?.name || '').trim();
-    if (!code || !name) {
-      return res.status(400).json({ error: 'Missing required fields' });
+    if (!name) {
+      return res.status(400).json({ error: 'Subject name is required' });
     }
+    const code = requestedCode || (await buildSubjectCodeFromName(name));
 
     const result = await pool.query(
       `INSERT INTO subjects (code, name, is_active)
@@ -2780,7 +2801,7 @@ function buildStudentImportTemplateBuffer() {
     {
       Field: 'Register Number',
       Required: 'Yes',
-      Notes: 'Unique value. Existing register numbers are skipped and never overwritten.',
+      Notes: 'Unique value. Existing register numbers are updated for name/department/section when provided.',
     },
     {
       Field: 'Student Name',
@@ -3107,6 +3128,9 @@ app.post('/admin/students/import', requireSuperAdmin, excelUpload.single('file')
     }
 
     const fallbackStream = String(req.body?.stream || '').trim();
+    if (!fallbackStream) {
+      return res.status(400).json({ error: 'Target Department is required' });
+    }
     const fallbackSection = String(req.body?.section || '').trim().toUpperCase();
     const dryRun = String(req.body?.dryRun || '').toLowerCase() === 'true';
     const rows = parseStudentsFromWorkbook(req.file.buffer);
@@ -3130,6 +3154,7 @@ app.post('/admin/students/import', requireSuperAdmin, excelUpload.single('file')
     }
 
     let inserted = 0;
+    let updated = 0;
     let skipped = 0;
     const streamCount = {};
 
@@ -3139,16 +3164,23 @@ app.post('/admin/students/import', requireSuperAdmin, excelUpload.single('file')
       for (const row of rows) {
         const stream = row.stream || fallbackStream;
         const section = row.section || fallbackSection || inferSectionFromRegNo(row.regNo);
-        const insertStudent = await client.query(
+        const upsertStudent = await client.query(
           `INSERT INTO students (reg_no, full_name, stream, section)
            VALUES ($1, $2, $3, $4)
-           ON CONFLICT (reg_no) DO NOTHING
-           RETURNING reg_no`,
+           ON CONFLICT (reg_no) DO UPDATE
+             SET full_name = EXCLUDED.full_name,
+                 stream = COALESCE(EXCLUDED.stream, students.stream),
+                 section = COALESCE(EXCLUDED.section, students.section)
+           WHERE students.full_name IS DISTINCT FROM EXCLUDED.full_name
+              OR (EXCLUDED.stream IS NOT NULL AND students.stream IS DISTINCT FROM EXCLUDED.stream)
+              OR (EXCLUDED.section IS NOT NULL AND students.section IS DISTINCT FROM EXCLUDED.section)
+           RETURNING (xmax = 0) AS inserted`,
           [row.regNo, row.fullName, stream || null, section || null]
         );
 
-        const wasInserted = insertStudent.rows.length > 0;
-        if (wasInserted) {
+        if (!upsertStudent.rows.length) {
+          skipped += 1;
+        } else if (upsertStudent.rows[0].inserted) {
           inserted += 1;
           await client.query(
             `INSERT INTO student_auth (reg_no, password_hash, password_changed)
@@ -3157,7 +3189,7 @@ app.post('/admin/students/import', requireSuperAdmin, excelUpload.single('file')
             [row.regNo, hashPassword(row.regNo)]
           );
         } else {
-          skipped += 1;
+          updated += 1;
         }
 
         const key = stream || 'Unspecified';
@@ -3175,7 +3207,7 @@ app.post('/admin/students/import', requireSuperAdmin, excelUpload.single('file')
       ok: true,
       total: rows.length,
       inserted,
-      updated: 0,
+      updated,
       skipped,
       streams: streamCount,
     });
@@ -3199,6 +3231,58 @@ app.post('/api/auth/staff/password', requireAuth('staff'), async (req, res, next
     );
 
     res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/api/auth/staff/student-password', requireAuth('staff'), async (req, res, next) => {
+  try {
+    const regNo = String(req.body?.regNo || '').trim().toUpperCase();
+    const newPassword = String(req.body?.newPassword || '');
+    const staffEmail = normalizeStaffEmail(req.auth.email);
+
+    if (!regNo || newPassword.length < 6) {
+      return res.status(400).json({ error: 'Valid register number and password (min 6) are required' });
+    }
+
+    const studentResult = await pool.query(
+      `SELECT BTRIM(reg_no) AS reg_no
+       FROM students
+       WHERE UPPER(BTRIM(reg_no)) = UPPER(BTRIM($1))
+       LIMIT 1`,
+      [regNo]
+    );
+    if (!studentResult.rows.length) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
+    const normalizedRegNo = String(studentResult.rows[0].reg_no || '').trim().toUpperCase();
+
+    const mappedResult = await pool.query(
+      `SELECT 1
+       FROM student_staff_subject_assignments sssa
+       WHERE sssa.staff_email = $1
+         AND UPPER(BTRIM(sssa.reg_no)) = UPPER(BTRIM($2))
+         AND sssa.is_active = TRUE
+       LIMIT 1`,
+      [staffEmail, normalizedRegNo]
+    );
+    if (!mappedResult.rows.length) {
+      return res.status(403).json({ error: 'You are not assigned to this student' });
+    }
+
+    await pool.query(
+      `INSERT INTO student_auth (reg_no, password_hash, password_changed, updated_at)
+       VALUES ($1, $2, TRUE, NOW())
+       ON CONFLICT (reg_no)
+       DO UPDATE SET password_hash = EXCLUDED.password_hash,
+                     password_changed = TRUE,
+                     updated_at = NOW()`,
+      [normalizedRegNo, hashPassword(newPassword)]
+    );
+
+    res.json({ ok: true, regNo: normalizedRegNo });
   } catch (err) {
     next(err);
   }
@@ -3956,7 +4040,7 @@ app.post('/student/ppts', requireAuth('student'), materialUpload.single('file'),
 
     await pool.query(
       `INSERT INTO uploads (stored_name, original_name, mime_type, size_bytes, file_url, folder_path, owner_reg_no, upload_kind, subject_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, 'student_ppt', $9)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, 'student_ppt', $8)
        ON CONFLICT (stored_name)
        DO UPDATE SET original_name = EXCLUDED.original_name,
                      mime_type = EXCLUDED.mime_type,
@@ -4022,7 +4106,12 @@ app.get('/student/ppts', requireAuth('student'), async (req, res, next) => {
       params
     );
 
-    res.json({ ppts: result.rows });
+    const ppts = result.rows.map((row) => ({
+      ...row,
+      file_url: createSignedFileUrl(row.stored_name),
+    }));
+
+    res.json({ ppts });
   } catch (err) {
     next(err);
   }
@@ -4086,7 +4175,81 @@ app.get('/staff/student-ppts', requireAuth('staff'), async (req, res, next) => {
       params
     );
 
-    res.json({ ppts: result.rows });
+    const ppts = result.rows.map((row) => ({
+      ...row,
+      file_url: createSignedFileUrl(row.stored_name),
+    }));
+
+    res.json({ ppts });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete('/staff/student-ppts/:storedName', requireAuth('staff'), async (req, res, next) => {
+  try {
+    const storedName = path.basename(String(req.params?.storedName || ''));
+    if (!storedName) {
+      return res.status(400).json({ error: 'Invalid file id' });
+    }
+
+    const staffEmail = normalizeStaffEmail(req.auth.email);
+    const isSA = isSuperAdminSession(req.auth);
+
+    const found = await pool.query(
+      `SELECT stored_name, folder_path, owner_reg_no, subject_id
+       FROM uploads
+       WHERE stored_name = $1
+         AND upload_kind = 'student_ppt'`,
+      [storedName]
+    );
+
+    if (!found.rows.length) {
+      return res.status(404).json({ error: 'PPT not found' });
+    }
+
+    const row = found.rows[0];
+    const subjectId = Number(row.subject_id);
+    const ownerRegNo = normalizeRegNo(row.owner_reg_no);
+
+    if (!isSA) {
+      const canAccessSubject = await ensureStaffAssignedToSubject(staffEmail, subjectId);
+      if (!canAccessSubject) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+
+      const canAccessStudent = await ensureStaffMappedToStudentForSubject(staffEmail, ownerRegNo, subjectId);
+      if (!canAccessStudent) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    }
+
+    await pool.query(
+      `DELETE FROM uploads
+       WHERE stored_name = $1
+         AND upload_kind = 'student_ppt'`,
+      [storedName]
+    );
+
+    const folderPath = String(row.folder_path || '').replace(/\\/g, '/');
+    const absolutePath = path.join(uploadDir, folderPath, storedName);
+    try {
+      if (fs.existsSync(absolutePath)) {
+        fs.unlinkSync(absolutePath);
+      }
+    } catch (_err) {
+      // Best effort cleanup.
+    }
+
+    const quota = await upsertStudentQuota(ownerRegNo);
+    res.json({
+      ok: true,
+      quota: {
+        usedBytes: quota.usedBytes,
+        remainingBytes: quota.remainingBytes,
+        totalBytes: quota.quotaBytes,
+      },
+    });
   } catch (err) {
     next(err);
   }

@@ -37,6 +37,25 @@ function resolveImageUrl(src) {
   if (!token) return normalized;
   return `${normalized}${normalized.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
 }
+
+function resolveStudentPptOpenUrl(rawUrl) {
+  const raw = String(rawUrl || '').trim();
+  if (!raw) return '#';
+
+  let normalized = raw;
+  if (raw.startsWith('/uploads/')) {
+    normalized = `/api/files/${encodeURIComponent(raw.split('/').pop() || '')}`;
+  } else if (raw.startsWith('uploads/')) {
+    normalized = `/api/files/${encodeURIComponent(raw.split('/').pop() || '')}`;
+  } else if (raw.startsWith('/api/uploads/')) {
+    normalized = `/api/files/${encodeURIComponent(raw.split('/').pop() || '')}`;
+  }
+
+  if (!normalized.startsWith('/api/files/')) return normalized;
+  const token = getStudentSession()?.token || '';
+  if (!token) return normalized;
+  return `${normalized}${normalized.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
+}
 // ── Auth guard (runs BEFORE DOMContentLoaded) ─────────────────
 // students-db.js must be loaded before this file
 requireStudentAuth();
@@ -182,13 +201,12 @@ async function loadSubjectDropdown() {
     subjects.forEach(s => {
       const id = String(s.id);
       const name = String(s.name || '');
-      const code = String(s.code || '');
 
       // 1. Populate Dropdown
       const opt = document.createElement('option');
       opt.value = id;
-      opt.dataset.code = code;
-      opt.textContent = `${code} - ${name}`;
+      opt.dataset.name = name;
+      opt.textContent = name || 'Subject';
       select.appendChild(opt);
 
       // 2. Populate Sidebar
@@ -812,9 +830,10 @@ function initStudentPptPanel() {
         subjectSelect.innerHTML = '<option value="">No assigned subjects</option>';
         return;
       }
-      subjectSelect.innerHTML = subjects
-        .map((s) => `<option value="${escapeHtml(String(s.id || ''))}">${escapeHtml(`${String(s.code || '').trim()} - ${String(s.name || '').trim()}`)}</option>`)
+      const options = subjects
+        .map((s) => `<option value="${escapeHtml(String(s.id || ''))}">${escapeHtml(String(s.name || '').trim() || 'Subject')}</option>`)
         .join('');
+      subjectSelect.innerHTML = `<option value="" selected>Select subject</option>${options}`;
     } catch (err) {
       subjectSelect.innerHTML = '<option value="">Failed to load subjects</option>';
       msg.style.color = '#ffb8c7';
@@ -824,9 +843,11 @@ function initStudentPptPanel() {
 
   async function refreshPptList() {
     const subjectId = Number(String(subjectSelect.value || '').trim());
-    const qs = Number.isFinite(subjectId) && subjectId > 0
-      ? `?subjectId=${encodeURIComponent(subjectId)}`
-      : '';
+    if (!Number.isFinite(subjectId) || subjectId <= 0) {
+      list.innerHTML = '<div class="empty-state"><p>Select a subject to view only that subject PPT uploads.</p></div>';
+      return;
+    }
+    const qs = `?subjectId=${encodeURIComponent(subjectId)}`;
     list.innerHTML = 'Loading...';
     try {
       const payload = await studentApiJson(`/api/student/ppts${qs}`);
@@ -836,14 +857,14 @@ function initStudentPptPanel() {
         return;
       }
       list.innerHTML = rows.map((row) => {
-        const openUrl = String(row.file_url || '').trim() || '#';
+        const openUrl = resolveStudentPptOpenUrl(row.file_url);
         return `
           <div class="result-item">
             <div class="result-header">
               <div class="result-title">${escapeHtml(row.original_name || 'PPT')}</div>
               <span class="status-badge status-review">${escapeHtml(formatBytes(row.size_bytes || 0))}</span>
             </div>
-            <div class="result-subtitle">${escapeHtml(String(row.subject_code || ''))} · ${escapeHtml(new Date(row.created_at).toLocaleString())}</div>
+            <div class="result-subtitle">${escapeHtml(String(row.subject_name || ''))} · ${escapeHtml(new Date(row.created_at).toLocaleString())}</div>
             <div class="result-actions" style="margin-top:8px;">
               <a class="result-edit-btn" href="${escapeHtml(openUrl)}" target="_blank" rel="noopener">Open PPT</a>
             </div>
@@ -897,7 +918,8 @@ function initStudentPptPanel() {
       }
 
       msg.style.color = '#9de9ff';
-      msg.textContent = `Uploaded: ${payload?.ppt?.originalName || file.name}`;
+      const subjectLabel = subjectSelect.options[subjectSelect.selectedIndex]?.text || `Subject ${subjectId}`;
+      msg.textContent = `Uploaded to ${subjectLabel}: ${payload?.ppt?.originalName || file.name}`;
       showToast('PPT uploaded successfully', 'success');
       fileInput.value = '';
       titleInput.value = '';
@@ -1387,9 +1409,9 @@ async function handleSubmit(e) {
     }
 
     const selectedOpt = subjectEl.options[subjectEl.selectedIndex];
-    const subjectCode = selectedOpt?.dataset?.code || subjectEl.value || '';
+    const subjectCode = subjectEl.value || '';
     const subjectId = /^\d+$/.test(String(subjectEl.value)) ? Number(subjectEl.value) : null;
-    const subjectName = selectedOpt?.textContent || subjectCode;
+    const subjectName = selectedOpt?.dataset?.name || selectedOpt?.textContent || subjectCode;
 
     const submission = {
       id: editingSubmissionId || generateId(),
@@ -1405,7 +1427,7 @@ async function handleSubmit(e) {
       status: 'pending', marks: null, totalMarks: null, feedback: '',
       submittedAt: new Date().toISOString(), gradedAt: null,
     };
-    console.log('[SUBMIT] Subject selected:', subjectName, '| subjectId:', subjectId, '| code:', subjectCode);
+    console.log('[SUBMIT] Subject selected:', subjectName, '| subjectId:', subjectId);
 
     if (editingSubmissionId) {
       await updateSubmission(editingSubmissionId, {

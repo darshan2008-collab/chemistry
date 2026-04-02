@@ -193,7 +193,7 @@ function populateFilters() {
   updateSelect('trackerSectionFilter', sections, 'Section');
   updateSelect('recordStreamFilter', streams, 'Department');
   updateSelect('recordSectionFilter', sections, 'Section');
-  
+
   // Update state variables to match current selections
   trackerStreamFilter = document.getElementById('trackerStreamFilter')?.value || 'all';
   trackerSectionFilter = document.getElementById('trackerSectionFilter')?.value || 'all';
@@ -347,6 +347,7 @@ function initStaffCommsPanel() {
         const student = `${String(row.owner_reg_no || '').trim()} - ${String(row.student_name || '').trim()}`.trim();
         const subject = `${String(row.subject_code || '').trim()} (${String(row.subject_name || '').trim()})`;
         const created = row.created_at ? new Date(row.created_at).toLocaleString() : '-';
+        const storedName = String(row.stored_name || '').trim();
         return `
           <div style="padding:7px 0;border-bottom:1px solid rgba(255,255,255,0.08);">
             <div style="font-weight:600;color:var(--text);">${esc(row.original_name || 'PPT Upload')}</div>
@@ -354,6 +355,7 @@ function initStaffCommsPanel() {
             <div>${esc(created)} · ${esc(formatBytes(row.size_bytes || 0))}</div>
             <div style="margin-top:6px;display:flex;gap:8px;flex-wrap:wrap;">
               <a class="t-grade-btn" style="padding:4px 8px;font-size:0.72rem;text-decoration:none;" href="${esc(href)}" target="_blank" rel="noopener">Open PPT</a>
+              <button class="t-grade-btn" data-delete-ppt="${esc(storedName)}" title="Delete PPT" style="padding:4px 8px;font-size:0.72rem;background:rgba(255,107,107,0.22);border:1px solid rgba(255,107,107,0.45);color:#ffd7d7;">Delete PPT</button>
             </div>
           </div>
         `;
@@ -532,6 +534,22 @@ function initStaffCommsPanel() {
   });
 
   card.addEventListener('click', async (e) => {
+    const deletePptBtn = e.target.closest('[data-delete-ppt]');
+    if (deletePptBtn) {
+      const storedName = String(deletePptBtn.getAttribute('data-delete-ppt') || '').trim();
+      if (!storedName) return;
+      if (!confirm('Delete this student PPT permanently?')) return;
+      try {
+        await staffApiJson(`/api/staff/student-ppts/${encodeURIComponent(storedName)}`, { method: 'DELETE' });
+        showToast('Student PPT deleted', 'success');
+        await refreshStudentPpts();
+        await renderPptDirectory();
+      } catch (err) {
+        showToast(err.message || 'Failed to delete PPT', 'error');
+      }
+      return;
+    }
+
     const replyBtn = e.target.closest('[data-reply-thread]');
     const closeBtn = e.target.closest('[data-close-thread]');
     const target = replyBtn || closeBtn;
@@ -731,12 +749,28 @@ function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
 function normalizePptUploadUrl(url) {
   const raw = String(url || '').trim();
   if (!raw) return '#';
-  if (raw.startsWith('/api/uploads/')) return raw;
-  if (raw.startsWith('/uploads/')) return `/api${raw}`;
-  if (raw.startsWith('uploads/')) return `/api/${raw}`;
-  if (/^https?:\/\//i.test(raw)) return raw;
-  if (raw.startsWith('/')) return raw;
-  return '#';
+  let normalized = raw;
+
+  if (raw.startsWith('/uploads/')) {
+    normalized = `/api/files/${encodeURIComponent(raw.split('/').pop() || '')}`;
+  } else if (raw.startsWith('uploads/')) {
+    normalized = `/api/files/${encodeURIComponent(raw.split('/').pop() || '')}`;
+  } else if (raw.startsWith('/api/uploads/')) {
+    normalized = `/api/files/${encodeURIComponent(raw.split('/').pop() || '')}`;
+  }
+
+  if (/^https?:\/\//i.test(normalized)) return normalized;
+  if (!normalized.startsWith('/')) return '#';
+
+  if (!normalized.startsWith('/api/files/')) return normalized;
+
+  const token =
+    JSON.parse(sessionStorage.getItem('chemtest_staff') || 'null')?.token ||
+    JSON.parse(sessionStorage.getItem('chemtest_ppt_staff') || 'null')?.token ||
+    '';
+
+  if (!token) return normalized;
+  return `${normalized}${normalized.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
 }
 
 async function renderPptDirectory() {
@@ -791,8 +825,12 @@ async function renderPptDirectory() {
         : '<span class="t-badge t-none">No Upload</span>';
 
       const latestHref = latest ? normalizePptUploadUrl(latest.file_url) : '#';
+      const latestStoredName = latest ? String(latest.stored_name || '').trim() : '';
       const action = latest && latestHref !== '#'
-        ? `<a class="t-grade-btn" style="padding:4px 8px;font-size:0.72rem;text-decoration:none;" href="${esc(latestHref)}" target="_blank" rel="noopener">Open Latest</a>`
+        ? `<div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <a class="t-grade-btn" style="padding:4px 8px;font-size:0.72rem;text-decoration:none;" href="${esc(latestHref)}" target="_blank" rel="noopener">Open Latest</a>
+            <button class="t-grade-btn" data-delete-ppt="${esc(latestStoredName)}" title="Delete PPT" style="padding:4px 8px;font-size:0.72rem;background:rgba(255,107,107,0.22);border:1px solid rgba(255,107,107,0.45);color:#ffd7d7;">Delete PPT</button>
+          </div>`
         : '<span class="t-marks-none">-</span>';
 
       return `
@@ -824,6 +862,25 @@ async function renderPptDirectory() {
         </table>
       </div>
     `;
+
+    wrap.querySelectorAll('[data-delete-ppt]').forEach((btn) => {
+      btn.addEventListener('click', async (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const storedName = String(btn.getAttribute('data-delete-ppt') || '').trim();
+        if (!storedName) return;
+        if (!confirm('Delete this student PPT permanently?')) return;
+        try {
+          await staffApiJson(`/api/staff/student-ppts/${encodeURIComponent(storedName)}`, { method: 'DELETE' });
+          showToast('Student PPT deleted', 'success');
+          await renderPptDirectory();
+          const refreshBtn = document.getElementById('staffStudentPptRefreshBtn');
+          if (refreshBtn) refreshBtn.click();
+        } catch (err) {
+          showToast(err.message || 'Failed to delete PPT', 'error');
+        }
+      });
+    });
   } catch (err) {
     wrap.innerHTML = `<div class="no-data"><p>${esc(err.message || 'Failed to load PPT directory')}</p></div>`;
   }
@@ -1009,9 +1066,35 @@ window.resetStudentPassword = function (regNo) {
   const name = studentObj ? studentObj.full_name : (STUDENTS_DB[regNo] || regNo);
   const newPw = prompt(`Enter new password for ${regNo} (${name}):`, regNo);
   if (!newPw) return;
-  setStudentPassword(regNo, newPw);
-  markPasswordChanged(regNo);
-  showToast(`✅ Password updated for ${regNo}`, 'success');
+
+  if (newPw.length < 6) {
+    showToast('❌ Password must be at least 6 characters', 'error');
+    return;
+  }
+
+  (async () => {
+    try {
+      const res = await fetch('/api/auth/staff/student-password', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...getStaffAuthHeaders(),
+        },
+        body: JSON.stringify({ regNo, newPassword: newPw }),
+      });
+
+      if (res.status === 401) {
+        handleAuthExpired();
+        return;
+      }
+
+      const payload = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(payload?.error || 'Failed to update student password');
+      showToast(`✅ Password updated for ${regNo}`, 'success');
+    } catch (err) {
+      showToast(`⚠️ ${err.message || 'Failed to update student password'}`, 'error');
+    }
+  })();
 };
 
 // ── Change Own Password (Staff) ───────────────────────────────

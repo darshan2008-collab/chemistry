@@ -75,8 +75,7 @@
         URL.revokeObjectURL(href);
     }
 
-    async function refreshStaff() 
-    {
+    async function refreshStaff() {
         const list = document.getElementById('staffList');
         list.innerHTML = 'Loading...';
         try {
@@ -111,7 +110,7 @@
                 if (btn.disabled) {
                     return;
                 }
-                
+
                 btn.addEventListener('click', async () => {
                     const email = btn.dataset.email;
                     const name = btn.dataset.name;
@@ -184,6 +183,11 @@
 
         const stream = String(document.getElementById('stream').value || '').trim();
         const file = document.getElementById('studentFile').files?.[0];
+        if (!stream) {
+            msg.style.color = '#ffb8c7';
+            msg.textContent = 'Target Department is required.';
+            return;
+        }
         if (!file) {
             msg.style.color = '#ffb8c7';
             msg.textContent = 'Please choose an Excel file.';
@@ -204,7 +208,7 @@
                 .join(', ');
 
             msg.style.color = '#9de9ff';
-            msg.textContent = `Processed ${payload.total} rows (new: ${payload.inserted}, skipped existing: ${payload.skipped || 0})${streamInfo ? ' · ' + streamInfo : ''}`;
+            msg.textContent = `Processed ${payload.total} rows (new: ${payload.inserted || 0}, updated: ${payload.updated || 0}, unchanged: ${payload.skipped || 0})${streamInfo ? ' · ' + streamInfo : ''}`;
             toast('Student import complete');
             document.getElementById('studentFile').value = '';
         } catch (err) {
@@ -302,9 +306,9 @@
         activateMenuTarget('staff');
     }
 
-    let refreshAssignments = () => {};
-    let refreshDbStatus = () => {};
-    let refreshSubjects = () => {};
+    let refreshAssignments = () => { };
+    let refreshDbStatus = () => { };
+    let refreshSubjects = () => { };
 
     function initAssignmentPanel() {
         const mount = document.getElementById('assignmentsMount');
@@ -345,28 +349,23 @@
                     <div id="assignStudentList" style="border:1px solid var(--line);border-radius:12px;background:var(--panel-strong);padding:12px 0;max-height:360px;overflow-y:auto;font-size:0.88rem;"></div>
                 </section>
 
-                <section class="card">
-                    <h3 style="font-size:1rem;margin-bottom:12px;">2️⃣ Select Teacher</h3>
-                    <select id="assignStaff" required style="width:100%;border:1px solid var(--line);border-radius:12px;background:var(--panel-strong);color:var(--text);padding:11px 12px;font-size:0.9rem;"></select>
-                </section>
-
-                <section class="card">
-                    <h3 style="font-size:1rem;margin-bottom:12px;">3️⃣ Select Subject</h3>
-                    <select id="assignSubject" required style="width:100%;border:1px solid var(--line);border-radius:12px;background:var(--panel-strong);color:var(--text);padding:11px 12px;font-size:0.9rem;"></select>
-                </section>
             </div>
 
             <section class="card" style="margin-top:24px;">
                 <div class="head-row">
                     <h3 style="font-size:1rem;">Actions</h3>
                 </div>
-                <div style="display:grid;gap:10px;margin-bottom:14px;">
-                    <div style="font-size:0.78rem;color:var(--muted);font-weight:800;letter-spacing:0.02em;">Subject Setup (Required before final mapping)</div>
-                    <div style="display:flex;gap:10px;flex-wrap:wrap;">
-                        <input id="assignNewSubjectCode" type="text" placeholder="Subject code (e.g. CHEM101)" style="flex:1;min-width:180px;border:1px solid var(--line);border-radius:12px;background:var(--panel-strong);color:var(--text);padding:10px 12px;font-size:0.88rem;" />
-                        <input id="assignNewSubjectName" type="text" placeholder="Subject name" style="flex:1;min-width:200px;border:1px solid var(--line);border-radius:12px;background:var(--panel-strong);color:var(--text);padding:10px 12px;font-size:0.88rem;" />
-                        <button class="btn" type="button" id="assignCreateSubjectBtn">Create Subject</button>
+                <div class="row" style="margin-bottom:12px;">
+                    <div class="col">
+                        <label style="display:block;font-size:0.82rem;color:var(--muted);margin-bottom:6px;">Select Teacher</label>
+                        <select id="assignStaff" required style="width:100%;border:1px solid var(--line);border-radius:12px;background:var(--panel-strong);color:var(--text);padding:11px 12px;font-size:0.9rem;"></select>
                     </div>
+                    <div class="col">
+                        <label style="display:block;font-size:0.82rem;color:var(--muted);margin-bottom:6px;">Select Subject</label>
+                        <select id="assignSubject" required style="width:100%;border:1px solid var(--line);border-radius:12px;background:var(--panel-strong);color:var(--text);padding:11px 12px;font-size:0.9rem;"></select>
+                    </div>
+                </div>
+                <div style="display:grid;gap:10px;margin-bottom:14px;">
                     <div style="display:flex;gap:10px;flex-wrap:wrap;">
                         <button class="btn" type="button" id="assignSubjectToStaffBtn" style="flex:1;min-width:220px;">Assign Subject to Teacher</button>
                         <button class="btn" type="button" id="assignSubjectToStudentsBtn" style="flex:1;min-width:260px;">Assign Subject to Selected Students</button>
@@ -398,8 +397,6 @@
         const subjectSel = mount.querySelector('#assignSubject');
         const msg = mount.querySelector('#assignMsg');
         const matrix = mount.querySelector('#assignMatrix');
-        const newSubjectCodeInput = mount.querySelector('#assignNewSubjectCode');
-        const newSubjectNameInput = mount.querySelector('#assignNewSubjectName');
         let allStudents = [];
 
         function extractMetadata(s) {
@@ -409,10 +406,10 @@
             const regNo = String(s.reg_no || s || '').trim();
             const match = regNo.match(/([A-Z]+)(\d+)$/i);
             if (!match) return { dept: 'OTHER', sec: 'Unknown', streamName: 'Other' };
-            
+
             const deptCode = match[1].toUpperCase();
             const rollInt = parseInt(match[2], 10);
-            
+
             let deptLabel = deptCode;
             let sectionLetter = 'M';
 
@@ -458,9 +455,9 @@
                 if (dept && dept !== 'OTHER') deptSet.add(dept);
                 if (sec && sec !== 'Unknown') secSet.add(sec);
             });
-            deptFilter.innerHTML = '<option value="all">All Departments</option>' + 
+            deptFilter.innerHTML = '<option value="all">All Departments</option>' +
                 Array.from(deptSet).sort().map(d => `<option value="${d}">${d}</option>`).join('');
-            sectionFilter.innerHTML = '<option value="all">All Sections</option>' + 
+            sectionFilter.innerHTML = '<option value="all">All Sections</option>' +
                 Array.from(secSet).sort().map(s => `<option value="${s}">${s}</option>`).join('');
         }
 
@@ -496,7 +493,7 @@
                 const mQuery = !q || String(s.reg_no || '').toLowerCase().includes(q) || String(s.full_name || '').toLowerCase().includes(q);
                 const mDept = dVal === 'all' || dVal === dept;
                 const mSec = sVal === 'all' || sVal === sec;
-                
+
                 return mQuery && mDept && mSec;
             });
 
@@ -514,10 +511,10 @@
             });
 
             const sortedKeys = Object.keys(groups).sort();
-            
+
             let html = '';
             sortedKeys.forEach(k => {
-                html += `<div style="padding:6px 12px; background:var(--bg-1); border-bottom:1px solid var(--line); border-top:1px solid var(--line); font-weight:800; color:var(--accent); font-size:0.7rem; text-transform:uppercase; letter-spacing:0.06em; position:sticky; top:0; z-index:2; margin-top:-1px;">Stream: ${k}</div>`;
+                html += `<div style="padding:8px 12px; background:var(--bg-1); border-bottom:1px solid var(--line); border-top:1px solid var(--line); font-weight:800; color:var(--accent); font-size:0.7rem; text-transform:uppercase; letter-spacing:0.06em;">Stream: ${k}</div>`;
                 html += groups[k].map(s => {
                     const regNo = escapeHtml(String(s.reg_no || ''));
                     const fullName = escapeHtml(String(s.full_name || ''));
@@ -561,8 +558,8 @@
                 allStudents = students;
                 populateFilters();
                 renderStudentOptions();
-                fillSelect(staffSel, staff, 'email', (s) => `${s.email} - ${s.full_name || ''}`);
-                fillSelect(subjectSel, subjects, 'id', (s) => `${s.code || ''} - ${s.name || ''}`);
+                fillSelect(staffSel, staff, 'email', (s) => `${s.full_name || s.email || ''}`);
+                fillSelect(subjectSel, subjects, 'id', (s) => `${s.name || ''}`);
             } catch (err) {
                 setMsg(err.message || 'Failed to load dropdown data', true);
             }
@@ -662,30 +659,6 @@
             }
         });
 
-        mount.querySelector('#assignCreateSubjectBtn').addEventListener('click', async () => {
-            const code = String(newSubjectCodeInput.value || '').trim();
-            const name = String(newSubjectNameInput.value || '').trim();
-            if (!code || !name) {
-                setMsg('Enter subject code and subject name', true);
-                return;
-            }
-
-            try {
-                const payload = await apiJson('/api/admin/subjects', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ code, name }),
-                });
-                setMsg(`Subject ready: ${payload.subject?.code || code}`);
-                toast('Subject created/updated');
-                newSubjectCodeInput.value = '';
-                newSubjectNameInput.value = '';
-                await loadOptions();
-            } catch (err) {
-                setMsg(err.message || 'Failed to create subject', true);
-            }
-        });
-
         mount.querySelector('#assignSubjectToStaffBtn').addEventListener('click', async () => {
             const staffEmail = String(staffSel.value || '').trim();
             const subjectId = Number(subjectSel.value || 0);
@@ -734,7 +707,7 @@
             const selectedRegNos = getSelectedStudentRegNos();
             const staffEmail = String(staffSel.value || '').trim();
             const subjectId = Number(subjectSel.value || 0);
-            
+
             if (!selectedRegNos.length || !staffEmail || !subjectId) {
                 setMsg('Select at least one student, teacher, and subject', true);
                 return;
@@ -867,7 +840,7 @@
         const subjectCodeInput = mount.querySelector('#opsSubjectCode');
         const subjectNameInput = mount.querySelector('#opsSubjectName');
 
-        refreshDbStatus = async function() {
+        refreshDbStatus = async function () {
             const list = mount.querySelector('#opsDbStatus');
             const timeEl = mount.querySelector('#opsDbStatusTime');
             list.innerHTML = 'Loading...';
@@ -954,7 +927,7 @@
             }
         }
 
-        refreshSubjects = async function() {
+        refreshSubjects = async function () {
             const list = mount.querySelector('#opsSubjectList');
             list.innerHTML = 'Loading...';
             try {

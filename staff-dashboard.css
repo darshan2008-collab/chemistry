@@ -118,7 +118,21 @@ input[type=number] {
 }
 
 .sidebar-logo {
-  font-size: 1.8rem;
+  width: 42px;
+  height: 42px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: 'Space Grotesk', sans-serif;
+  font-size: 0.95rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
+  color: #fff;
+  background: linear-gradient(135deg, #ff5f6d 0%, #ffc371 33%, #2af598 66%, #36c2ff 100%);
+  background-size: 220% 220%;
+  box-shadow: 0 0 22px rgba(54, 194, 255, 0.35);
+  animation: brandShift 7s ease-in-out infinite;
 }
 
 .sidebar-brand {
@@ -129,11 +143,34 @@ input[type=number] {
   display: block;
   font-weight: 700;
   font-size: 1rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  background: linear-gradient(90deg, #ff6b6b 0%, #ffd166 28%, #4ef08f 58%, #4cc9f0 100%);
+  background-size: 220% 220%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  text-shadow: 0 0 14px rgba(76, 201, 240, 0.25);
+  animation: brandShift 6s ease-in-out infinite;
 }
 
 .sidebar-brand small {
   color: var(--text-muted);
   font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+}
+
+@keyframes brandShift {
+
+  0%,
+  100% {
+    background-position: 0% 50%;
+  }
+
+  50% {
+    background-position: 100% 50%;
+  }
 }
 
 .sidebar-close {

@@ -25,48 +25,12 @@
 
   <!-- Nav -->
   <nav class="navbar">
-    <div class="nav-brand" style="display: flex; align-items: center; gap: 10px;">
-      <div class="nav-logo" style="display: flex; align-items: center; justify-content: center; font-size:0;">
-        <svg viewBox="0 0 64 64" width="30" height="30" style="filter: drop-shadow(0 0 8px rgba(0, 212, 170, 0.6));">
-          <defs>
-            <linearGradient id="flaskFlaskGrad" x1="0%" y1="100%" x2="100%" y2="0%">
-              <stop offset="0%" stop-color="#00a884" />
-              <stop offset="40%" stop-color="#00d4aa" />
-              <stop offset="100%" stop-color="#6c63ff" />
-            </linearGradient>
-            <radialGradient id="flaskGlow" cx="50%" cy="75%" r="50%">
-              <stop offset="0%" stop-color="#00d4aa" stop-opacity="0.9" />
-              <stop offset="100%" stop-color="#000" stop-opacity="0" />
-            </radialGradient>
-          </defs>
-          <!-- Tripod Stand -->
-          <path d="M17 56 L26 38 L38 38 L47 56" stroke="#6c63ff" stroke-width="3" stroke-linecap="round"
-            stroke-linejoin="round" fill="none" opacity="0.8" />
-          <!-- Glass Flask Neck Top -->
-          <path d="M26 12 H38" stroke="#e0e0ff" stroke-width="2.5" stroke-linecap="round" fill="none" />
-          <path d="M25 10 H39" stroke="#e0e0ff" stroke-width="2" stroke-linecap="round" fill="none" />
-          <!-- Glass Flask Body -->
-          <path d="M36 12 V28 L49.5 48.5 A 7 7 0 0 1 45 56 H19 A 7 7 0 0 1 14.5 48.5 L28 28 V12 Z"
-            fill="rgba(255,255,255,0.15)" stroke="#ffffff" stroke-width="2" stroke-linejoin="round" />
-          <!-- Liquid Fill Base -->
-          <path d="M17 44 H47 L48.8 47 A 6 6 0 0 1 44.5 54.5 H19.5 A 6 6 0 0 1 15.2 47 Z" fill="url(#flaskFlaskGrad)" />
-          <!-- Liquid Inner Glow -->
-          <circle cx="32" cy="49" r="14" fill="url(#flaskGlow)" />
-          <!-- Bubbles -->
-          <circle cx="23" cy="51" r="2.5" fill="#ffffff" opacity="0.8" />
-          <circle cx="39" cy="47" r="1.5" fill="#ffffff" opacity="0.9" />
-          <circle cx="30" cy="45" r="1.5" fill="#ffffff" opacity="0.6" />
-          <circle cx="34" cy="52" r="2" fill="#ffffff" opacity="0.7" />
-          <circle cx="28" cy="48" r="1" fill="#ffffff" opacity="0.5" />
-          <!-- Glass Reflection Highlight -->
-          <path d="M42 36 L47 44" stroke="#ffffff" stroke-width="2" stroke-linecap="round" opacity="0.4" />
-        </svg>
+    <div class="nav-brand">
+      <div class="nav-logo" aria-hidden="true">📝</div>
+      <div class="nav-brand-title">
+        <span>UNITEST</span>
+        <strong>Portal</strong>
       </div>
-      <span
-        style="font-size: 1.15rem; font-weight: 800; background: linear-gradient(135deg, #ffffff 10%, #00d4aa 50%, #6c63ff 100%); -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent; text-shadow: 0 0 20px rgba(0, 212, 170, 0.4); letter-spacing: -0.3px;">
-        Unitest <strong
-          style="color: #6c63ff; -webkit-text-fill-color: #6c63ff; font-weight: 900; background: none; -webkit-background-clip: border-box; background-clip: border-box; text-shadow: 0 0 15px rgba(108, 99, 255, 0.6);">Portal</strong>
-      </span>
     </div>
     <div class="nav-right">
       <div class="nav-student-info" id="navStudentInfo">
@@ -345,7 +309,7 @@
   </div> <!-- .layout-wrapper -->
 
   <script src="students-db.js?v=20260402c"></script>
-  <script src="student.js?v=20260402c"></script>
+  <script src="student.js?v=20260402d"></script>
 </body>
 
 </html>
