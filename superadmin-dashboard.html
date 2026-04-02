@@ -6,7 +6,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Super Admin Dashboard - Unitest Portal</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Syne:wght@600;700;800&display=swap" rel="stylesheet" />
+    <link
+        href="https://fonts.googleapis.com/css2?family=Manrope:wght@500;600;700;800&family=Syne:wght@600;700;800&display=swap"
+        rel="stylesheet" />
     <link rel="stylesheet" href="superadmin-dashboard.css" />
 </head>
 
@@ -22,9 +24,12 @@
         </header>
 
         <nav class="admin-menu" aria-label="Super Admin Sections">
-            <button type="button" class="admin-menu-btn active" data-menu-target="staff" aria-selected="true">Staff & Imports</button>
-            <button type="button" class="admin-menu-btn" data-menu-target="assignments" aria-selected="false">Teacher Assignments</button>
-            <button type="button" class="admin-menu-btn" data-menu-target="operations" aria-selected="false">Operations & Subjects</button>
+            <button type="button" class="admin-menu-btn active" data-menu-target="staff" aria-selected="true">Staff &
+                Imports</button>
+            <button type="button" class="admin-menu-btn" data-menu-target="assignments" aria-selected="false">Teacher
+                Assignments</button>
+            <button type="button" class="admin-menu-btn" data-menu-target="operations" aria-selected="false">Operations
+                & Subjects</button>
         </nav>
 
         <!-- STAFF PANEL -->
@@ -90,14 +95,18 @@
         <!-- ASSIGNMENTS PANEL (Populated by JS) -->
         <section class="menu-panel" data-panel="assignments" id="panel-assignments" hidden>
             <div id="assignmentsMount">
-                <div class="list-item"><div class="meta">Loading assignments interface...</div></div>
+                <div class="list-item">
+                    <div class="meta">Loading assignments interface...</div>
+                </div>
             </div>
         </section>
 
         <!-- OPERATIONS PANEL (Populated by JS) -->
         <section class="menu-panel" data-panel="operations" id="panel-operations" hidden>
             <div id="operationsMount">
-                <div class="list-item"><div class="meta">Loading specialized tools...</div></div>
+                <div class="list-item">
+                    <div class="meta">Loading specialized tools...</div>
+                </div>
             </div>
         </section>
 
@@ -108,7 +117,7 @@
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-    <script src="superadmin-dashboard.js"></script>
+    <script src="superadmin-dashboard.js?v=20260402c"></script>
 </body>
 
 </html>

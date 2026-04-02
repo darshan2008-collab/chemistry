@@ -1,0 +1,184 @@
+﻿name: chemistry
+services:
+  chemtest-api:
+    build:
+      context: C:\Users\ELCOT\Desktop\chemistry
+      dockerfile: api/Dockerfile
+    container_name: chemtest-api
+    depends_on:
+      chemtest-db:
+        condition: service_healthy
+        required: true
+      chemtest-redis:
+        condition: service_healthy
+        required: true
+    environment:
+      API_PORT: "3000"
+      AUTH_PEPPER: chem_authpepper_2026_c1a79e42f0
+      AUTH_SESSION_TTL_HOURS: "24"
+      BASELINE_ASSIGNMENTS_ON_STARTUP: "false"
+      DB_HOST: chemtest-db
+      DB_NAME: chemistry
+      DB_PASSWORD: ChemistryDB_2026!R8n4
+      DB_PORT: "5432"
+      DB_USER: chemistry_user
+      FILE_URL_SIGNING_SECRET: chem_filesigning_2026_a8b2f7d9e1
+      REDIS_URL: redis://:redis123@chemtest-redis:6379
+      RESYNC_TOKEN: chem_resync_2026_9f4a3d17ab
+      STAFF_DEFAULT_EMAIL: shreekesavan
+      STAFF_DEFAULT_NAME: Shreekesavan
+      STAFF_DEFAULT_PASSWORD: Kesavan@123
+      STAFF_DEFAULT_ROLE: Chemistry Teacher
+      STUDENTS_FILE: /app/students-db.js
+      STUDENTS_SYNC_ON_STARTUP: "false"
+      SUPERADMIN_DEFAULT_EMAIL: unitaryx
+      SUPERADMIN_DEFAULT_NAME: Unitary X
+      SUPERADMIN_DEFAULT_PASSWORD: unitary@10
+      SUPERADMIN_DEFAULT_ROLE: Super Admin
+      TZ: Asia/Kolkata
+      UHV_ASSIGNMENTS_ON_STARTUP: "false"
+      UHV_STAFF_EMAIL: vijayakumar
+      UHV_STAFF_NAME: Vijayakumar
+      UHV_STAFF_PASSWORD: uhv@123
+      UHV_STAFF_ROLE: UHV Teacher
+      UPLOAD_DIR: /data/uploads
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q --spider http://127.0.0.1:3000/health || exit 1
+      timeout: 5s
+      interval: 20s
+      retries: 5
+      start_period: 15s
+    image: chemtest-api:local
+    networks:
+      chemistry-net: null
+    ports:
+      - mode: ingress
+        target: 3000
+        published: "3000"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: C:/Users/ELCOT/Desktop/chemistry/data/uploads
+        target: /data/uploads
+  chemtest-cleanup:
+    command:
+      - sh
+      - -c
+      - ' echo "30 2 * * * wget -qO- --header=''x-resync-token: chem_resync_2026_9f4a3d17ab'' --post-data='''' http://chemtest-api:3000/internal/cleanup/uploads >/proc/1/fd/1 2>/proc/1/fd/2" > /etc/crontabs/root && crond -f -l 8 '
+    container_name: chemtest-cleanup
+    environment:
+      API_PORT: "3000"
+      CLEANUP_SCHEDULE: 30 2 * * *
+      RESYNC_TOKEN: chem_resync_2026_9f4a3d17ab
+      RETENTION_DAYS: "90"
+      TZ: Asia/Kolkata
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pgrep crond >/dev/null || exit 1
+      timeout: 5s
+      interval: 30s
+      retries: 5
+      start_period: 10s
+    image: alpine:3.20
+    networks:
+      chemistry-net: null
+    restart: unless-stopped
+  chemtest-db:
+    container_name: chemtest-db
+    environment:
+      POSTGRES_DB: chemistry
+      POSTGRES_PASSWORD: ChemistryDB_2026!R8n4
+      POSTGRES_USER: chemistry_user
+      TZ: Asia/Kolkata
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U chemistry_user -d chemistry -h 127.0.0.1 -p 5432 || exit 1
+      timeout: 5s
+      interval: 20s
+      retries: 8
+      start_period: 15s
+    image: postgres:16-alpine
+    networks:
+      chemistry-net: null
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: C:/Users/ELCOT/Desktop/chemistry/data/postgres
+        target: /var/lib/postgresql/data
+  chemtest-redis:
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - redis123
+    container_name: chemtest-redis
+    environment:
+      TZ: Asia/Kolkata
+    healthcheck:
+      test:
+        - CMD
+        - redis-cli
+        - ping
+      timeout: 5s
+      interval: 10s
+      retries: 5
+      start_period: 10s
+    image: redis:7-alpine
+    networks:
+      chemistry-net: null
+    ports:
+      - mode: ingress
+        target: 6379
+        published: "6379"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: C:/Users/ELCOT/Desktop/chemistry/data/redis
+        target: /data
+  chemtest-web:
+    build:
+      context: C:\Users\ELCOT\Desktop\chemistry
+      dockerfile: nginx/Dockerfile
+    container_name: chemtest-web
+    depends_on:
+      chemtest-api:
+        condition: service_healthy
+        required: true
+    environment:
+      APP_ENV: production
+      APP_PORT: "10004"
+      TZ: Asia/Kolkata
+    expose:
+      - "80"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - wget -q --spider http://127.0.0.1:80 || exit 1
+      timeout: 5s
+      interval: 30s
+      retries: 5
+      start_period: 20s
+    image: chemtest-web:local
+    networks:
+      chemistry-net: null
+    ports:
+      - mode: ingress
+        target: 80
+        published: "10004"
+        protocol: tcp
+    restart: unless-stopped
+    volumes:
+      - type: bind
+        source: C:/Users/ELCOT/Desktop/chemistry/data/uploads
+        target: /data/uploads
+networks:
+  chemistry-net:
+    name: chemistry-stack-net
+    driver: bridge

@@ -112,225 +112,230 @@
       <header class="hero">
         <div class="hero-badge">📚 Home Test Submission</div>
         <h1 class="hero-title">Upload Your<br /><span class="gradient-text">Home Test</span></h1>
-        <p class="hero-sub">Take a clear photo of your answer sheet and submit it below. Your teacher will review and give
+        <p class="hero-sub">Take a clear photo of your answer sheet and submit it below. Your teacher will review and
+          give
           you marks & feedback.</p>
         <div class="hero-stats">
-          <div class="stat"><span class="stat-num" id="totalSubmissions">0</span><span class="stat-label">Submissions</span>
+          <div class="stat"><span class="stat-num" id="totalSubmissions">0</span><span
+              class="stat-label">Submissions</span>
           </div>
           <div class="stat-divider"></div>
           <div class="stat"><span class="stat-num" id="gradedCount">0</span><span class="stat-label">Graded</span></div>
           <div class="stat-divider"></div>
-          <div class="stat"><span class="stat-num" id="pendingCount">0</span><span class="stat-label">Pending</span></div>
+          <div class="stat"><span class="stat-num" id="pendingCount">0</span><span class="stat-label">Pending</span>
+          </div>
         </div>
       </header>
 
-  <!-- Main Form -->
-  <main class="container">
-    <section class="glass-card upload-card" id="uploadSection">
-      <div class="card-header">
-        <div class="card-icon">📝</div>
-        <div>
-          <h2>Submit Your Test</h2>
-          <p>Fill in your details and upload your photos</p>
+      <!-- Main Form -->
+      <main class="container">
+        <section class="glass-card upload-card" id="uploadSection">
+          <div class="card-header">
+            <div class="card-icon">📝</div>
+            <div>
+              <h2>Submit Your Test</h2>
+              <p>Fill in your details and upload your photos</p>
+            </div>
+          </div>
+
+          <form id="uploadForm" novalidate>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="studentName">Full Name</label>
+                <div class="input-wrap">
+                  <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="2">
+                    <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
+                    <circle cx="12" cy="7" r="4" />
+                  </svg>
+                  <input type="text" id="studentName" placeholder="Auto-filled from login" readonly
+                    style="opacity:0.8;cursor:default;" />
+                </div>
+              </div>
+              <div class="form-group">
+                <label for="rollNumber">Register Number</label>
+                <div class="input-wrap">
+                  <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                    stroke-width="2">
+                    <rect x="2" y="3" width="20" height="14" rx="2" />
+                    <line x1="8" y1="21" x2="16" y2="21" />
+                    <line x1="12" y1="17" x2="12" y2="21" />
+                  </svg>
+                  <input type="text" id="rollNumber" placeholder="Auto-filled from login" readonly
+                    style="opacity:0.8;cursor:default;" />
+                </div>
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="subjectSelect">Subject <span class="req">*</span></label>
+              <div class="input-wrap">
+                <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  stroke-width="2">
+                  <circle cx="12" cy="12" r="10" />
+                  <path d="M8 12h8" />
+                  <path d="M12 8v8" />
+                </svg>
+                <select id="subjectSelect" required>
+                  <option value="" disabled selected>Loading subjects…</option>
+                </select>
+              </div>
+              <span class="field-error" id="subjectError"></span>
+            </div>
+
+
+
+            <div class="form-group">
+              <label for="testTitle">Test Title / Chapter <span class="req">*</span></label>
+              <div class="input-wrap">
+                <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                  stroke-width="2">
+                  <line x1="8" y1="6" x2="21" y2="6" />
+                  <line x1="8" y1="12" x2="21" y2="12" />
+                  <line x1="8" y1="18" x2="21" y2="18" />
+                  <line x1="3" y1="6" x2="3.01" y2="6" />
+                  <line x1="3" y1="12" x2="3.01" y2="12" />
+                  <line x1="3" y1="18" x2="3.01" y2="18" />
+                </svg>
+                <input type="text" id="testTitle" placeholder="e.g. Chapter 5 – Equilibrium" required />
+              </div>
+              <span class="field-error" id="titleError"></span>
+            </div>
+
+            <!-- Drop Zone -->
+            <div class="form-group">
+              <label>Answer Sheet Photos <span class="req">*</span></label>
+              <div class="drop-zone" id="dropZone">
+                <div class="drop-icon">📸</div>
+                <p class="drop-title">Drag &amp; Drop your photos here</p>
+                <p class="drop-sub">or click to browse</p>
+                <span class="drop-formats">JPG · PNG · HEIC · WebP · PDF</span>
+                <input type="file" id="fileInput" accept="image/*,.pdf" multiple hidden />
+              </div>
+              <span class="field-error" id="fileError"></span>
+            </div>
+
+            <!-- Preview Grid -->
+            <div class="preview-grid" id="previewGrid"></div>
+
+            <!-- Notes -->
+            <div class="form-group">
+              <label for="notes">Additional Notes <span class="label-hint">(Optional)</span></label>
+              <div class="input-wrap textarea-wrap">
+                <textarea id="notes" rows="3" placeholder="Any message for your teacher..."></textarea>
+              </div>
+            </div>
+
+            <button type="submit" class="submit-btn" id="submitBtn">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <line x1="22" y1="2" x2="11" y2="13" />
+                <polygon points="22 2 15 22 11 13 2 9 22 2" />
+              </svg>
+              Submit Test
+            </button>
+            <button type="button" class="cancel-edit-btn" id="cancelEditBtn" hidden>Cancel Edit</button>
+
+            <div class="upload-progress" id="uploadProgress" aria-live="polite" aria-hidden="true">
+              <div class="upload-progress-head">
+                <span id="uploadPercentLabel">0%</span>
+                <span id="uploadSpeedLabel">0 KB/s</span>
+              </div>
+              <div class="upload-progress-track">
+                <div class="upload-progress-fill" id="uploadProgressFill"></div>
+              </div>
+            </div>
+          </form>
+        </section>
+
+        <!-- My Results -->
+        <section class="glass-card results-card" id="resultsSection">
+          <div class="card-header">
+            <div class="card-icon">🎯</div>
+            <div>
+              <h2>My Results</h2>
+              <p>Your submitted tests and teacher feedback</p>
+            </div>
+          </div>
+          <div id="resultsList" class="results-list">
+            <div class="empty-state">
+              <div class="empty-icon">📭</div>
+              <p>You haven't submitted any tests yet</p>
+            </div>
+          </div>
+        </section>
+      </main>
+
+      <!-- Toast -->
+      <div id="toast" class="toast" role="alert"></div>
+
+      <!-- Success Modal -->
+      <div class="modal-overlay" id="successModal">
+        <div class="modal">
+          <div class="modal-anim">
+            <div class="check-circle">
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5">
+                <polyline points="20 6 9 17 4 12" />
+              </svg>
+            </div>
+          </div>
+          <h3>Submitted Successfully!</h3>
+          <p>Your home test has been uploaded. Your teacher will review it soon.</p>
+          <button class="modal-close-btn" id="modalCloseBtn">Done</button>
         </div>
       </div>
 
-      <form id="uploadForm" novalidate>
-        <div class="form-row">
-          <div class="form-group">
-            <label for="studentName">Full Name</label>
+      <div class="modal-overlay" id="passwordModal">
+        <div class="modal pw-modal">
+          <h3>Change Password</h3>
+          <p>Set a new password for your student account.</p>
+          <div class="form-group" style="text-align:left;margin-top:12px;">
+            <label for="currentPasswordInput">Current Password</label>
             <div class="input-wrap">
               <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                 stroke-width="2">
-                <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" />
-                <circle cx="12" cy="7" r="4" />
+                <rect x="3" y="11" width="18" height="11" rx="2" />
+                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
               </svg>
-              <input type="text" id="studentName" placeholder="Auto-filled from login" readonly
-                style="opacity:0.8;cursor:default;" />
+              <input type="password" id="currentPasswordInput" placeholder="Enter current password"
+                autocomplete="current-password" />
             </div>
           </div>
-          <div class="form-group">
-            <label for="rollNumber">Register Number</label>
+          <div class="form-group" style="text-align:left;">
+            <label for="newPasswordInput">New Password</label>
             <div class="input-wrap">
               <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
                 stroke-width="2">
-                <rect x="2" y="3" width="20" height="14" rx="2" />
-                <line x1="8" y1="21" x2="16" y2="21" />
-                <line x1="12" y1="17" x2="12" y2="21" />
+                <rect x="3" y="11" width="18" height="11" rx="2" />
+                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
               </svg>
-              <input type="text" id="rollNumber" placeholder="Auto-filled from login" readonly
-                style="opacity:0.8;cursor:default;" />
+              <input type="password" id="newPasswordInput" placeholder="Minimum 6 characters"
+                autocomplete="new-password" />
             </div>
           </div>
-        </div>
-
-        <div class="form-group">
-          <label for="subjectSelect">Subject <span class="req">*</span></label>
-          <div class="input-wrap">
-            <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-              <circle cx="12" cy="12" r="10" />
-              <path d="M8 12h8" />
-              <path d="M12 8v8" />
-            </svg>
-            <select id="subjectSelect" required>
-              <option value="" disabled selected>Loading subjects…</option>
-            </select>
+          <div class="form-group" style="text-align:left;">
+            <label for="confirmPasswordInput">Confirm New Password</label>
+            <div class="input-wrap">
+              <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                stroke-width="2">
+                <rect x="3" y="11" width="18" height="11" rx="2" />
+                <path d="M7 11V7a5 5 0 0 1 10 0v4" />
+              </svg>
+              <input type="password" id="confirmPasswordInput" placeholder="Re-enter new password"
+                autocomplete="new-password" />
+            </div>
           </div>
-          <span class="field-error" id="subjectError"></span>
-        </div>
-
-
-
-        <div class="form-group">
-          <label for="testTitle">Test Title / Chapter <span class="req">*</span></label>
-          <div class="input-wrap">
-            <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-              stroke-width="2">
-              <line x1="8" y1="6" x2="21" y2="6" />
-              <line x1="8" y1="12" x2="21" y2="12" />
-              <line x1="8" y1="18" x2="21" y2="18" />
-              <line x1="3" y1="6" x2="3.01" y2="6" />
-              <line x1="3" y1="12" x2="3.01" y2="12" />
-              <line x1="3" y1="18" x2="3.01" y2="18" />
-            </svg>
-            <input type="text" id="testTitle" placeholder="e.g. Chapter 5 – Equilibrium" required />
-          </div>
-          <span class="field-error" id="titleError"></span>
-        </div>
-
-        <!-- Drop Zone -->
-        <div class="form-group">
-          <label>Answer Sheet Photos <span class="req">*</span></label>
-          <div class="drop-zone" id="dropZone">
-            <div class="drop-icon">📸</div>
-            <p class="drop-title">Drag &amp; Drop your photos here</p>
-            <p class="drop-sub">or click to browse</p>
-            <span class="drop-formats">JPG · PNG · HEIC · WebP · PDF</span>
-            <input type="file" id="fileInput" accept="image/*,.pdf" multiple hidden />
-          </div>
-          <span class="field-error" id="fileError"></span>
-        </div>
-
-        <!-- Preview Grid -->
-        <div class="preview-grid" id="previewGrid"></div>
-
-        <!-- Notes -->
-        <div class="form-group">
-          <label for="notes">Additional Notes <span class="label-hint">(Optional)</span></label>
-          <div class="input-wrap textarea-wrap">
-            <textarea id="notes" rows="3" placeholder="Any message for your teacher..."></textarea>
+          <div class="pw-actions">
+            <button class="modal-close-btn" id="cancelPasswordBtn" type="button">Cancel</button>
+            <button class="modal-close-btn" id="savePasswordBtn" type="button">Update Password</button>
           </div>
         </div>
-
-        <button type="submit" class="submit-btn" id="submitBtn">
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-            <line x1="22" y1="2" x2="11" y2="13" />
-            <polygon points="22 2 15 22 11 13 2 9 22 2" />
-          </svg>
-          Submit Test
-        </button>
-        <button type="button" class="cancel-edit-btn" id="cancelEditBtn" hidden>Cancel Edit</button>
-
-        <div class="upload-progress" id="uploadProgress" aria-live="polite" aria-hidden="true">
-          <div class="upload-progress-head">
-            <span id="uploadPercentLabel">0%</span>
-            <span id="uploadSpeedLabel">0 KB/s</span>
-          </div>
-          <div class="upload-progress-track">
-            <div class="upload-progress-fill" id="uploadProgressFill"></div>
-          </div>
-        </div>
-      </form>
-    </section>
-
-    <!-- My Results -->
-    <section class="glass-card results-card" id="resultsSection">
-      <div class="card-header">
-        <div class="card-icon">🎯</div>
-        <div>
-          <h2>My Results</h2>
-          <p>Your submitted tests and teacher feedback</p>
-        </div>
       </div>
-      <div id="resultsList" class="results-list">
-        <div class="empty-state">
-          <div class="empty-icon">📭</div>
-          <p>You haven't submitted any tests yet</p>
-        </div>
-      </div>
-    </section>
-  </main>
 
-  <!-- Toast -->
-  <div id="toast" class="toast" role="alert"></div>
-
-  <!-- Success Modal -->
-  <div class="modal-overlay" id="successModal">
-    <div class="modal">
-      <div class="modal-anim">
-        <div class="check-circle">
-          <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.5">
-            <polyline points="20 6 9 17 4 12" />
-          </svg>
-        </div>
+      <!-- Image Lightbox -->
+      <div class="lightbox" id="lightbox">
+        <button class="lightbox-close" id="lightboxClose">✕</button>
+        <img id="lightboxImg" src="" alt="Full size" />
       </div>
-      <h3>Submitted Successfully!</h3>
-      <p>Your home test has been uploaded. Your teacher will review it soon.</p>
-      <button class="modal-close-btn" id="modalCloseBtn">Done</button>
-    </div>
-  </div>
-
-  <div class="modal-overlay" id="passwordModal">
-    <div class="modal pw-modal">
-      <h3>Change Password</h3>
-      <p>Set a new password for your student account.</p>
-      <div class="form-group" style="text-align:left;margin-top:12px;">
-        <label for="currentPasswordInput">Current Password</label>
-        <div class="input-wrap">
-          <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-            stroke-width="2">
-            <rect x="3" y="11" width="18" height="11" rx="2" />
-            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-          </svg>
-          <input type="password" id="currentPasswordInput" placeholder="Enter current password"
-            autocomplete="current-password" />
-        </div>
-      </div>
-      <div class="form-group" style="text-align:left;">
-        <label for="newPasswordInput">New Password</label>
-        <div class="input-wrap">
-          <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-            stroke-width="2">
-            <rect x="3" y="11" width="18" height="11" rx="2" />
-            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-          </svg>
-          <input type="password" id="newPasswordInput" placeholder="Minimum 6 characters" autocomplete="new-password" />
-        </div>
-      </div>
-      <div class="form-group" style="text-align:left;">
-        <label for="confirmPasswordInput">Confirm New Password</label>
-        <div class="input-wrap">
-          <svg class="input-icon" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-            stroke-width="2">
-            <rect x="3" y="11" width="18" height="11" rx="2" />
-            <path d="M7 11V7a5 5 0 0 1 10 0v4" />
-          </svg>
-          <input type="password" id="confirmPasswordInput" placeholder="Re-enter new password"
-            autocomplete="new-password" />
-        </div>
-      </div>
-      <div class="pw-actions">
-        <button class="modal-close-btn" id="cancelPasswordBtn" type="button">Cancel</button>
-        <button class="modal-close-btn" id="savePasswordBtn" type="button">Update Password</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Image Lightbox -->
-  <div class="lightbox" id="lightbox">
-    <button class="lightbox-close" id="lightboxClose">✕</button>
-    <img id="lightboxImg" src="" alt="Full size" />
-  </div>
 
       <!-- Footer is part of the flow -->
       <footer class="footer">
@@ -339,7 +344,8 @@
     </div> <!-- .main-content-flow -->
   </div> <!-- .layout-wrapper -->
 
-  <script src="student.js"></script>
+  <script src="students-db.js?v=20260402c"></script>
+  <script src="student.js?v=20260402c"></script>
 </body>
 
 </html>

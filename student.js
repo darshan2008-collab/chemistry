@@ -140,7 +140,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await updateStats();
   initDropZone();
   initForm();
-  
+
   // Sync sidebar when dropdown changes
   const subjectSelect = document.getElementById('subjectSelect');
   if (subjectSelect) {
@@ -167,13 +167,8 @@ async function loadSubjectDropdown() {
   if (!select || !sidebarList) return;
 
   try {
-    const token = getStudentAuthTokenOrThrow();
-    const res = await fetch('/api/subjects', {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    if (!res.ok) throw new Error('Failed to load subjects');
-    const { subjects } = await res.json();
-    
+    const { subjects } = await studentApiJson('/api/student/subjects');
+
     // Clear existing
     select.innerHTML = '<option value="" disabled selected>Select subject</option>';
     sidebarList.innerHTML = '';
@@ -200,31 +195,32 @@ async function loadSubjectDropdown() {
       const sideItem = document.createElement('div');
       sideItem.className = 'sidebar-item';
       sideItem.dataset.id = id;
-      
+
       const iconDiv = document.createElement('div');
       iconDiv.className = 'item-icon';
       iconDiv.textContent = '📘';
       sideItem.appendChild(iconDiv);
-      
+
       const infoDiv = document.createElement('div');
       infoDiv.className = 'item-info';
-      
+
       const codeDiv = document.createElement('div');
       codeDiv.style.cssText = 'font-size:0.85rem; font-weight:800; color:var(--text);';
       codeDiv.textContent = code;
       infoDiv.appendChild(codeDiv);
-      
+
       const nameDiv = document.createElement('div');
       nameDiv.style.cssText = 'font-size:0.75rem; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:180px;';
       nameDiv.textContent = name;
       infoDiv.appendChild(nameDiv);
-      
+
       sideItem.appendChild(infoDiv);
       sideItem.addEventListener('click', () => selectSubject(id));
       sidebarList.appendChild(sideItem);
     });
 
   } catch (err) {
+    if (String(err?.message || '').toLowerCase().includes('unauthorized')) return;
     console.error('[SUBJECTS] Failed to load subjects:', err);
     select.innerHTML = '<option value="" disabled selected>Error loading subjects</option>';
     sidebarList.innerHTML = '<div class="sidebar-loading" style="color:#ffb8c7;">Failed to load subjects</div>';
@@ -239,12 +235,12 @@ function selectSubject(id) {
     // Trigger any change listeners
     select.dispatchEvent(new Event('change'));
   }
-  
+
   // Highlight sidebar
   document.querySelectorAll('.sidebar-item').forEach(item => {
     item.classList.toggle('active', item.dataset.id === id);
   });
-  
+
   // Visual feedback - highlight the form briefly
   const card = document.getElementById('uploadSection');
   if (card) {
@@ -1445,14 +1441,14 @@ async function handleSubmit(e) {
     hideUploadProgress();
     const errorMsg = err.message || 'Unknown error';
     console.error('[SUBMIT-ERROR] Full error:', err);
-    
+
     let displayMsg = `❌ Upload failed: ${errorMsg}`;
     if (errorMsg.includes('assigned to this subject')) {
       displayMsg = '⚠️ You are not assigned to this subject. Please contact your teacher.';
     } else if (errorMsg.includes('403')) {
-       displayMsg = '⚠️ Access Forbidden. Check subject assignment.';
+      displayMsg = '⚠️ Access Forbidden. Check subject assignment.';
     }
-    
+
     showToast(displayMsg.substring(0, 100), 'error');
   } finally {
     setTimeout(hideUploadProgress, 800);

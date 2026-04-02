@@ -25,6 +25,7 @@ COPY superadmin-login.css /usr/share/nginx/html/superadmin-login.css
 COPY student.css /usr/share/nginx/html/student.css
 COPY student-login.css /usr/share/nginx/html/student-login.css
 
+COPY students-db.js /usr/share/nginx/html/students-db.js
 COPY grade.js /usr/share/nginx/html/grade.js
 COPY login.js /usr/share/nginx/html/login.js
 COPY splash.js /usr/share/nginx/html/splash.js

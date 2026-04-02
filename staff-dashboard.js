@@ -140,41 +140,26 @@ async function staffApiJson(url, options = {}) {
 
 async function initSubjectSelector() {
   const selector = document.getElementById('staffSubjectSelector');
-  if (!selector) return;
+  if (selector) {
+    selector.style.display = 'none';
+    selector.disabled = true;
+  }
 
   try {
     const payload = await staffApiJson('/api/staff/subjects');
     assignedSubjects = payload.subjects || [];
 
     if (assignedSubjects.length === 0) {
-      selector.innerHTML = '<option value="">No subjects assigned</option>';
-      selector.style.display = 'block';
-      selector.disabled = true;
+      currentSubjectId = null;
       return;
     }
 
-    selector.innerHTML = '';
-    for (const subject of assignedSubjects) {
-      const option = document.createElement('option');
-      option.value = String(subject.id);
-      option.textContent = `${subject.code || ''} - ${subject.name || ''}`;
-      selector.appendChild(option);
-    }
-    selector.style.display = 'block';
-    
-    // Set default subject
-    currentSubjectId = Number(selector.value);
-    
-    selector.addEventListener('change', async () => {
-      currentSubjectId = Number(selector.value);
-      await refreshAllForSubject();
-    });
+    // Keep a deterministic default subject while hiding manual selector UI.
+    currentSubjectId = Number(assignedSubjects[0].id);
 
     await refreshAllForSubject();
   } catch (err) {
     console.error('Failed to load subjects:', err);
-    selector.innerHTML = '<option value="">Error loading subjects</option>';
-    selector.style.display = 'block';
   }
 }
 
@@ -224,6 +209,7 @@ async function refreshAllForSubject() {
     populateFilters();
     await refreshSubmissions();
     renderAll();
+    await renderPptDirectory();
   } catch (err) {
     console.error('Failed to load students/submissions for subject:', err);
     showToast('Failed to load data for selected subject', 'error');
@@ -356,9 +342,8 @@ function initStaffCommsPanel() {
         list.innerHTML = 'No student PPT uploads for this subject yet.';
         return;
       }
-
       list.innerHTML = rows.slice(0, 80).map((row) => {
-        const href = String(row.file_url || '').trim() || '#';
+        const href = normalizePptUploadUrl(row.file_url);
         const student = `${String(row.owner_reg_no || '').trim()} - ${String(row.student_name || '').trim()}`.trim();
         const subject = `${String(row.subject_code || '').trim()} (${String(row.subject_name || '').trim()})`;
         const created = row.created_at ? new Date(row.created_at).toLocaleString() : '-';
@@ -710,6 +695,14 @@ function initTabs() {
   if (rStream) rStream.addEventListener('change', () => { recordStreamFilter = rStream.value; renderRecords(); });
   const rSection = document.getElementById('recordSectionFilter');
   if (rSection) rSection.addEventListener('change', () => { recordSectionFilter = rSection.value; renderRecords(); });
+
+  const pptRefresh = document.getElementById('refreshPptDirectoryBtn');
+  if (pptRefresh) {
+    pptRefresh.addEventListener('click', async () => {
+      await renderPptDirectory();
+      showToast('PPT list refreshed', 'info');
+    });
+  }
 }
 
 function matchesFilters(student, streamVal, sectionVal) {
@@ -720,15 +713,121 @@ function matchesFilters(student, streamVal, sectionVal) {
 
 function switchTab(tab) {
   activeTab = tab;
+  const mainContent = document.querySelector('.main-content');
+  if (mainContent) {
+    mainContent.classList.toggle('full-page-ppt', tab === 'ppt');
+  }
   document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('tab' + cap(tab)).classList.add('active');
   document.getElementById('nav' + cap(tab)).classList.add('active');
-  document.getElementById('topbarTitle').textContent = { dashboard: 'Dashboard', tracker: 'Student Tracker', records: 'Student Records' }[tab];
+  document.getElementById('topbarTitle').textContent = { dashboard: 'Dashboard', tracker: 'Student Tracker', records: 'Student Records', ppt: 'PPT Directory' }[tab];
   if (tab === 'tracker') renderStudentTracker();
   if (tab === 'records') renderRecords();
+  if (tab === 'ppt') renderPptDirectory();
 }
 function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
+
+function normalizePptUploadUrl(url) {
+  const raw = String(url || '').trim();
+  if (!raw) return '#';
+  if (raw.startsWith('/api/uploads/')) return raw;
+  if (raw.startsWith('/uploads/')) return `/api${raw}`;
+  if (raw.startsWith('uploads/')) return `/api/${raw}`;
+  if (/^https?:\/\//i.test(raw)) return raw;
+  if (raw.startsWith('/')) return raw;
+  return '#';
+}
+
+async function renderPptDirectory() {
+  const wrap = document.getElementById('pptStudentDirectory');
+  const summary = document.getElementById('pptDirectorySummary');
+  if (!wrap) return;
+
+  if (!currentSubjectId) {
+    wrap.innerHTML = emptyHTML('No subject selected for PPT directory.');
+    if (summary) summary.textContent = 'Name, register number and section with PPT upload status';
+    return;
+  }
+
+  wrap.innerHTML = '<div class="no-data"><p>Loading PPT student directory...</p></div>';
+
+  try {
+    const payload = await staffApiJson(`/api/staff/student-ppts?subjectId=${encodeURIComponent(currentSubjectId)}`);
+    const rows = payload.ppts || [];
+
+    const uploadByReg = new Map();
+    for (const row of rows) {
+      const reg = String(row.owner_reg_no || '').trim();
+      if (!reg) continue;
+      const list = uploadByReg.get(reg) || [];
+      list.push(row);
+      uploadByReg.set(reg, list);
+    }
+
+    const students = [...assignedStudents].sort((a, b) => String(a.reg_no || '').localeCompare(String(b.reg_no || '')));
+    if (!students.length) {
+      wrap.innerHTML = emptyHTML('No assigned students found for this subject.');
+      if (summary) summary.textContent = 'No students assigned';
+      return;
+    }
+
+    const submittedCount = students.filter((s) => (uploadByReg.get(String(s.reg_no || '').trim()) || []).length > 0).length;
+    if (summary) {
+      summary.textContent = `Total students: ${students.length} | Uploaded PPT: ${submittedCount}`;
+    }
+
+    const tableRows = students.map((s, idx) => {
+      const reg = String(s.reg_no || '').trim();
+      const name = String(s.full_name || 'Unknown').trim();
+      const section = String(s.section || '-').trim() || '-';
+      const uploads = uploadByReg.get(reg) || [];
+      const latest = uploads
+        .slice()
+        .sort((a, b) => new Date(b.created_at || 0) - new Date(a.created_at || 0))[0];
+
+      const status = uploads.length
+        ? `<span class="t-badge t-graded">${uploads.length} upload${uploads.length > 1 ? 's' : ''}</span>`
+        : '<span class="t-badge t-none">No Upload</span>';
+
+      const latestHref = latest ? normalizePptUploadUrl(latest.file_url) : '#';
+      const action = latest && latestHref !== '#'
+        ? `<a class="t-grade-btn" style="padding:4px 8px;font-size:0.72rem;text-decoration:none;" href="${esc(latestHref)}" target="_blank" rel="noopener">Open Latest</a>`
+        : '<span class="t-marks-none">-</span>';
+
+      return `
+        <tr>
+          <td>${idx + 1}</td>
+          <td>${esc(name)}</td>
+          <td>${esc(reg)}</td>
+          <td>${esc(section)}</td>
+          <td>${status}</td>
+          <td>${action}</td>
+        </tr>
+      `;
+    }).join('');
+
+    wrap.innerHTML = `
+      <div class="ppt-directory-wrap">
+        <table class="ppt-directory-table">
+          <thead>
+            <tr>
+              <th>#</th>
+              <th>Student Name</th>
+              <th>Register Number</th>
+              <th>Section</th>
+              <th>PPT Status</th>
+              <th>Action</th>
+            </tr>
+          </thead>
+          <tbody>${tableRows}</tbody>
+        </table>
+      </div>
+    `;
+  } catch (err) {
+    wrap.innerHTML = `<div class="no-data"><p>${esc(err.message || 'Failed to load PPT directory')}</p></div>`;
+  }
+}
 
 // ── Render All ────────────────────────────────────────────────
 function renderAll() {
@@ -1027,6 +1126,7 @@ function initRefresh() {
       try {
         await refreshSubmissions();
         renderAll();
+        await renderPptDirectory();
         showToast('🔄 Refreshed', 'info');
       } catch (err) {
         showToast('⚠️ Refresh failed', 'error');
