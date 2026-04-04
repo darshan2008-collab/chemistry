@@ -88,6 +88,7 @@ async function fetchSubmissions({ rollNumber, includeArchived = false } = {}) {
   params.set('includeArchived', String(includeArchived));
   const res = await fetch(`/api/submissions?${params.toString()}`, {
     headers: { Authorization: `Bearer ${token}` },
+    cache: 'no-store',
   });
   if (!res.ok) throw new Error('Failed to load submissions');
   const payload = await res.json();
@@ -200,6 +201,7 @@ async function loadSubjectDropdown() {
 
     subjects.forEach(s => {
       const id = String(s.id);
+      const code = String(s.code || '').trim();
       const name = String(s.name || '');
 
       // 1. Populate Dropdown
@@ -224,7 +226,7 @@ async function loadSubjectDropdown() {
 
       const codeDiv = document.createElement('div');
       codeDiv.style.cssText = 'font-size:0.85rem; font-weight:800; color:var(--text);';
-      codeDiv.textContent = code;
+      codeDiv.textContent = code || 'Subject';
       infoDiv.appendChild(codeDiv);
 
       const nameDiv = document.createElement('div');
@@ -278,7 +280,7 @@ async function studentApiJson(url, options = {}) {
     Authorization: `Bearer ${token}`,
     ...(options.headers || {}),
   };
-  const res = await fetch(url, { ...options, headers });
+  const res = await fetch(url, { ...options, headers, cache: 'no-store' });
   const payload = await res.json().catch(() => ({}));
   if (res.status === 401) {
     handleStudentAuthExpired();
@@ -1076,6 +1078,24 @@ function prefillStudentFields() {
   if (!session) return;
   document.getElementById('studentName').value = session.name;
   document.getElementById('rollNumber').value = session.regNo;
+
+  // Always refresh profile from DB so superadmin updates appear immediately.
+  studentApiJson('/api/student/profile')
+    .then((payload) => {
+      const student = payload?.student || {};
+      const latestRegNo = String(student.reg_no || session.regNo || '').trim().toUpperCase();
+      const latestName = String(student.full_name || session.name || '').trim();
+
+      const nameEl = document.getElementById('studentName');
+      const rollEl = document.getElementById('rollNumber');
+      if (nameEl) nameEl.value = latestName;
+      if (rollEl) rollEl.value = latestRegNo;
+
+      setStudentSession(latestRegNo, session.token, latestName);
+    })
+    .catch(() => {
+      // Keep existing session values if profile refresh fails.
+    });
 }
 
 // ── Stats ─────────────────────────────────────────────────────

@@ -587,6 +587,20 @@ details.staff-profile-menu summary::-webkit-details-marker {
   margin-bottom: 28px;
 }
 
+.page-title-with-action {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.page-shortcut-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  white-space: nowrap;
+}
+
 .page-title h1 {
   font-family: 'Space Grotesk', sans-serif;
   font-size: 1.7rem;
@@ -1172,6 +1186,37 @@ details.staff-profile-menu summary::-webkit-details-marker {
   flex-direction: column;
 }
 
+/* AL/SSA Marks panel layout safety */
+#tabUhvMarks .section-header {
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 10px;
+}
+
+#uhvManualMarksPanel {
+  overflow: hidden;
+}
+
+#uhvManualMarksStatus {
+  overflow-wrap: anywhere;
+}
+
+#uhvManualMarksPanel .ppt-directory-wrap {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: auto;
+}
+
+#uhvManualMarksTable {
+  min-width: 920px;
+}
+
+#uhvManualMarksTable input.filter-select {
+  width: 100%;
+  min-width: 84px;
+}
+
 .record-card-header {
   padding: 16px 20px;
   background: rgba(255, 255, 255, 0.03);
@@ -1699,6 +1744,11 @@ details.staff-profile-menu summary::-webkit-details-marker {
 
 /* ── Mobile ──────────────────────────────────────────────────── */
 @media (max-width: 900px) {
+  .page-title-with-action {
+    flex-wrap: wrap;
+    align-items: flex-start;
+  }
+
   .stats-grid {
     grid-template-columns: 1fr 1fr;
   }

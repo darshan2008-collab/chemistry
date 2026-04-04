@@ -18,6 +18,7 @@ let recordSectionFilter = 'all';
 let currentSubjectId = null;
 let assignedStudents = [];
 let assignedSubjects = [];
+let uhvManualMarksRows = [];
 
 const A7_PREFIXES = new Set(['BAD', 'BAM']);
 const A3_PREFIXES = new Set(['BCS', 'BIT', 'BSC']);
@@ -116,6 +117,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   setDate();
   initSidebar();
   initTabs();
+  initUhvManualMarksPanel();
   initRefresh();
   initDownloadButtons();
   initLogout();
@@ -141,21 +143,54 @@ async function staffApiJson(url, options = {}) {
 async function initSubjectSelector() {
   const selector = document.getElementById('staffSubjectSelector');
   if (selector) {
-    selector.style.display = 'none';
-    selector.disabled = true;
+    selector.style.display = '';
+    selector.disabled = false;
+
+    if (!selector.dataset.bound) {
+      selector.addEventListener('change', async () => {
+        const nextId = Number(selector.value);
+        currentSubjectId = Number.isFinite(nextId) && nextId > 0 ? nextId : null;
+        await refreshAllForSubject();
+      });
+      selector.dataset.bound = '1';
+    }
   }
 
+  await refreshAssignedSubjects();
+}
+
+async function refreshAssignedSubjects() {
   try {
     const payload = await staffApiJson('/api/staff/subjects');
+    const previousSubjectId = Number(currentSubjectId);
     assignedSubjects = payload.subjects || [];
+    const selector = document.getElementById('staffSubjectSelector');
 
     if (assignedSubjects.length === 0) {
       currentSubjectId = null;
+      assignedStudents = [];
+      if (selector) {
+        selector.innerHTML = '<option value="">No Subjects</option>';
+        selector.disabled = true;
+      }
+      renderAll();
       return;
     }
 
-    // Keep a deterministic default subject while hiding manual selector UI.
-    currentSubjectId = Number(assignedSubjects[0].id);
+    const hasPrevious = assignedSubjects.some((s) => Number(s.id) === previousSubjectId);
+    currentSubjectId = hasPrevious ? previousSubjectId : Number(assignedSubjects[0].id);
+
+    if (selector) {
+      selector.disabled = false;
+      selector.innerHTML = assignedSubjects.map((s) => {
+        const id = Number(s.id);
+        const code = String(s.code || '').trim();
+        const name = String(s.name || '').trim();
+        const label = code && name ? `${code} - ${name}` : (code || name || `Subject ${id}`);
+        return `<option value="${id}">${esc(label)}</option>`;
+      }).join('');
+      if (currentSubjectId) selector.value = String(currentSubjectId);
+    }
 
     await refreshAllForSubject();
   } catch (err) {
@@ -204,8 +239,28 @@ function populateFilters() {
 async function refreshAllForSubject() {
   if (!currentSubjectId) return;
   try {
-    const payload = await staffApiJson(`/api/staff/students?subjectId=${currentSubjectId}`);
-    assignedStudents = payload.students || [];
+    let payload = await staffApiJson(`/api/staff/students?subjectId=${currentSubjectId}`);
+    let students = payload.students || [];
+
+    // If current subject has no students, try other assigned subjects and switch automatically.
+    if (!students.length && Array.isArray(assignedSubjects) && assignedSubjects.length > 1) {
+      for (const subject of assignedSubjects) {
+        const sid = Number(subject?.id);
+        if (!Number.isFinite(sid) || sid <= 0 || sid === Number(currentSubjectId)) continue;
+
+        const probe = await staffApiJson(`/api/staff/students?subjectId=${sid}`);
+        const probeStudents = probe.students || [];
+        if (probeStudents.length) {
+          currentSubjectId = sid;
+          students = probeStudents;
+          const selector = document.getElementById('staffSubjectSelector');
+          if (selector) selector.value = String(sid);
+          break;
+        }
+      }
+    }
+
+    assignedStudents = students;
     populateFilters();
     await refreshSubmissions();
     renderAll();
@@ -260,7 +315,7 @@ function initStaffCommsPanel() {
 
       <form id="staffReceiptForm" class="record-card" style="padding:12px;display:grid;gap:8px;">
         <div style="font-weight:700;">Read Receipts</div>
-        <input id="staffReceiptMessageId" placeholder="Announcement ID" style="padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:inherit;" required />
+        <input id="staffReceiptMessageId" placeholder="Announcement ID" style="padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.15);background:rgba(255,255,255,0.04);color:inherit;" />
         <button class="t-grade-btn" type="submit">Fetch Receipts</button>
         <div id="staffReceiptList" style="max-height:180px;overflow:auto;font-size:0.8rem;color:var(--text-muted);"></div>
       </form>
@@ -604,9 +659,17 @@ function getSubmissionsSignature() {
 }
 
 function initAutoRefresh() {
+  let lastAssignmentSyncAt = 0;
+
   // Poll every 500ms (AGGRESSIVE) for instant real-time updates
   setInterval(async () => {
     try {
+      // Pull new superadmin assignments periodically.
+      if (Date.now() - lastAssignmentSyncAt > 10000) {
+        await refreshAssignedSubjects();
+        lastAssignmentSyncAt = Date.now();
+      }
+
       await refreshSubmissions();
       const signature = getSubmissionsSignature();
       if (signature !== _lastDataSignature) {
@@ -700,6 +763,10 @@ function initTabs() {
   document.querySelectorAll('.view-all-btn').forEach(btn => {
     btn.addEventListener('click', () => switchTab(btn.dataset.tab));
   });
+  const openPptBtn = document.getElementById('openPptFromDashboard');
+  if (openPptBtn) {
+    openPptBtn.addEventListener('click', () => switchTab('ppt'));
+  }
   // Search
   const sea = document.getElementById('recordSearch');
   if (sea) sea.addEventListener('input', renderRecords);
@@ -723,6 +790,127 @@ function initTabs() {
   }
 }
 
+async function apiFetchUhvManualMarks() {
+  if (!currentSubjectId) throw new Error('Select a subject first');
+  const payload = await staffApiJson(`/api/staff/uhv-marks-entry?subjectId=${encodeURIComponent(currentSubjectId)}`);
+  return payload.rows || [];
+}
+
+async function apiSaveUhvManualMarksRow(row) {
+  return staffApiJson('/api/staff/uhv-marks-entry', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      subjectId: currentSubjectId,
+      regNo: row.regNo,
+      al1: row.al1,
+      al2: row.al2,
+      ssa1: row.ssa1,
+      ssa2: row.ssa2,
+    }),
+  });
+}
+
+function parseMarkInput(value) {
+  const raw = String(value ?? '').trim();
+  if (!raw) return null;
+  const num = Number(raw);
+  if (!Number.isFinite(num)) return null;
+  if (num < 0) return 0;
+  if (num > 20) return 20;
+  return Math.round(num * 100) / 100;
+}
+
+function renderUhvManualMarksTable() {
+  const body = document.getElementById('uhvManualMarksBody');
+  const statusEl = document.getElementById('uhvManualMarksStatus');
+  if (!body) return;
+
+  if (!uhvManualMarksRows.length) {
+    body.innerHTML = `<tr><td colspan="8" style="text-align:center;color:var(--text-muted);padding:16px;">No students found for this subject.</td></tr>`;
+    if (statusEl) statusEl.textContent = 'No data to edit.';
+    return;
+  }
+
+  body.innerHTML = uhvManualMarksRows.map((row, idx) => `
+    <tr>
+      <td>${idx + 1}</td>
+      <td>${esc(row.regNo)}</td>
+      <td>${esc(row.studentName)}</td>
+      <td>${esc(row.section || '-')}</td>
+      <td><input type="number" min="0" max="20" step="0.01" class="filter-select" data-mark-row="${idx}" data-mark-key="al1" value="${row.al1 ?? ''}" style="width:88px;height:34px;padding:0 8px;" /></td>
+      <td><input type="number" min="0" max="20" step="0.01" class="filter-select" data-mark-row="${idx}" data-mark-key="al2" value="${row.al2 ?? ''}" style="width:88px;height:34px;padding:0 8px;" /></td>
+      <td><input type="number" min="0" max="20" step="0.01" class="filter-select" data-mark-row="${idx}" data-mark-key="ssa1" value="${row.ssa1 ?? ''}" style="width:88px;height:34px;padding:0 8px;" /></td>
+      <td><input type="number" min="0" max="20" step="0.01" class="filter-select" data-mark-row="${idx}" data-mark-key="ssa2" value="${row.ssa2 ?? ''}" style="width:88px;height:34px;padding:0 8px;" /></td>
+    </tr>
+  `).join('');
+
+  if (statusEl) {
+    statusEl.textContent = `Loaded ${uhvManualMarksRows.length} students. Edit marks and click Save All Marks.`;
+  }
+}
+
+async function loadUhvManualMarksTable() {
+  const statusEl = document.getElementById('uhvManualMarksStatus');
+  if (statusEl) statusEl.textContent = 'Loading student marks data...';
+  uhvManualMarksRows = await apiFetchUhvManualMarks();
+  renderUhvManualMarksTable();
+}
+
+function initUhvManualMarksPanel() {
+  const panel = document.getElementById('uhvManualMarksPanel');
+  if (!panel) return;
+
+  panel.addEventListener('input', (e) => {
+    const input = e.target;
+    if (!input || !input.dataset) return;
+    const rowIndex = Number(input.dataset.markRow);
+    const key = input.dataset.markKey;
+    if (!Number.isFinite(rowIndex) || rowIndex < 0 || !uhvManualMarksRows[rowIndex]) return;
+    if (!['al1', 'al2', 'ssa1', 'ssa2'].includes(key)) return;
+    const parsed = parseMarkInput(input.value);
+    uhvManualMarksRows[rowIndex][key] = parsed;
+    if (String(input.value).trim() !== '' && parsed !== null) {
+      input.value = String(parsed);
+    }
+  });
+
+  const refreshBtn = document.getElementById('refreshUhvManualMarksBtn');
+  if (refreshBtn) {
+    refreshBtn.addEventListener('click', async () => {
+      try {
+        await loadUhvManualMarksTable();
+        showToast('Marks table refreshed', 'info');
+      } catch (err) {
+        showToast(err.message || 'Failed to refresh marks table', 'error');
+      }
+    });
+  }
+
+  const saveBtn = document.getElementById('saveUhvManualMarksBtn');
+  if (saveBtn) {
+    saveBtn.addEventListener('click', async () => {
+      const statusEl = document.getElementById('uhvManualMarksStatus');
+      try {
+        saveBtn.disabled = true;
+        if (statusEl) statusEl.textContent = 'Saving marks...';
+        for (const row of uhvManualMarksRows) {
+          await apiSaveUhvManualMarksRow(row);
+        }
+        if (statusEl) statusEl.textContent = 'All marks saved successfully.';
+        showToast('Manual marks saved', 'success');
+        await refreshSubmissions();
+        renderAll();
+      } catch (err) {
+        if (statusEl) statusEl.textContent = err.message || 'Failed to save marks';
+        showToast(err.message || 'Failed to save marks', 'error');
+      } finally {
+        saveBtn.disabled = false;
+      }
+    });
+  }
+}
+
 function matchesFilters(student, streamVal, sectionVal) {
   const sMatch = streamVal === 'all' || String(student.stream || '').trim() === streamVal;
   const cMatch = sectionVal === 'all' || String(student.section || '').trim() === sectionVal;
@@ -739,10 +927,17 @@ function switchTab(tab) {
   document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
   document.getElementById('tab' + cap(tab)).classList.add('active');
   document.getElementById('nav' + cap(tab)).classList.add('active');
-  document.getElementById('topbarTitle').textContent = { dashboard: 'Dashboard', tracker: 'Student Tracker', records: 'Student Records', ppt: 'PPT Directory' }[tab];
+  document.getElementById('topbarTitle').textContent = { dashboard: 'Dashboard', tracker: 'Student Tracker', records: 'Student Records', ppt: 'PPT Directory', uhvMarks: 'AL/SSA Marks' }[tab];
   if (tab === 'tracker') renderStudentTracker();
   if (tab === 'records') renderRecords();
   if (tab === 'ppt') renderPptDirectory();
+  if (tab === 'uhvMarks') {
+    loadUhvManualMarksTable().catch((err) => {
+      const statusEl = document.getElementById('uhvManualMarksStatus');
+      if (statusEl) statusEl.textContent = err.message || 'Failed to load marks data';
+      showToast(err.message || 'Failed to load marks data', 'error');
+    });
+  }
 }
 function cap(s) { return s.charAt(0).toUpperCase() + s.slice(1); }
 
@@ -1207,6 +1402,7 @@ function initRefresh() {
     btn.classList.add('spinning');
     setTimeout(async () => {
       try {
+        await refreshAssignedSubjects();
         await refreshSubmissions();
         renderAll();
         await renderPptDirectory();
@@ -1268,6 +1464,24 @@ function initDownloadButtons() {
         showToast(`⚠️ ${err.message || 'Download failed'}`, 'error');
       }
     });
+  }
+
+  const uhvMarksButtons = document.querySelectorAll('.uhv-marks-download-btn');
+  if (uhvMarksButtons.length > 0) {
+    uhvMarksButtons.forEach((uhvMarksBtn) => uhvMarksBtn.addEventListener('click', async () => {
+      if (!currentSubjectId) {
+        showToast('⚠️ Select a subject first', 'error');
+        return;
+      }
+      try {
+        const endpoint = `/api/reports/uhv-marks.xlsx?subjectId=${encodeURIComponent(currentSubjectId)}`;
+        await downloadExcelWithAuth(endpoint, 'uhv-marks-list.xlsx');
+        showToast('📝 Downloading AL1/AL2/SSA1/SSA2 marks list...', 'success');
+      } catch (err) {
+        console.error('Download UHV marks list error:', err);
+        showToast(`⚠️ ${err.message || 'Download failed'}`, 'error');
+      }
+    }));
   }
 }
 

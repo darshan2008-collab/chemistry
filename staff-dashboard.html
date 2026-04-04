@@ -91,6 +91,16 @@
         </svg>
         PPT
       </a>
+      <a href="#" class="nav-item" data-tab="uhvMarks" id="navUhvMarks">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+          <polyline points="14 2 14 8 20 8" />
+          <path d="M8 13h8" />
+          <path d="M8 17h8" />
+          <path d="M10 9h4" />
+        </svg>
+        AL/SSA Marks
+      </a>
     </nav>
 
     <div class="sidebar-footer">
@@ -132,9 +142,24 @@
     <main class="main-content">
       <!-- ── Dashboard Tab ─────────────────────────────────── -->
       <section class="tab-panel active" id="tabDashboard">
-        <div class="page-title">
-          <h1>Overview</h1>
-          <p id="dashDate">Today, --</p>
+        <div class="page-title page-title-with-action">
+          <div>
+            <h1>Overview</h1>
+            <p id="dashDate">Today, --</p>
+          </div>
+          <div style="display:flex; gap:8px; flex-wrap:wrap;">
+            <button class="clear-btn page-shortcut-btn" id="openPptFromDashboard" type="button"
+              title="Open PPT Directory">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                aria-hidden="true">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+                <polyline points="14 2 14 8 20 8" />
+                <path d="M9 15h6" />
+                <path d="M9 12h3" />
+              </svg>
+              PPT
+            </button>
+          </div>
         </div>
 
         <div class="stats-grid">
@@ -170,6 +195,45 @@
 
       </section>
 
+      <!-- ── AL/SSA Marks Tab ─────────────────────────────── -->
+      <section class="tab-panel" id="tabUhvMarks">
+        <div class="page-title">
+          <h1>AL/SSA Manual Marks Entry</h1>
+          <p>Enter marks directly for AL1, AL2, SSA1 and SSA2 (out of 20)</p>
+        </div>
+        <section class="record-card" id="uhvManualMarksPanel" style="margin-top:8px;">
+          <div class="section-header" style="margin-bottom:12px;">
+            <div>
+              <h2 style="margin:0;">Students Data</h2>
+            </div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;">
+              <button class="clear-btn" type="button" id="refreshUhvManualMarksBtn">Refresh</button>
+              <button class="clear-btn" type="button" id="saveUhvManualMarksBtn">Save All Marks</button>
+              <button class="clear-btn uhv-marks-download-btn" type="button"
+                title="Download UHV marks list with student details">📝 Download Excel</button>
+            </div>
+          </div>
+          <div id="uhvManualMarksStatus" style="margin-bottom:10px;color:var(--text-muted);font-size:0.82rem;"></div>
+          <div class="ppt-directory-wrap">
+            <table class="ppt-directory-table" id="uhvManualMarksTable">
+              <thead>
+                <tr>
+                  <th style="width:50px;">#</th>
+                  <th style="width:140px;">Register No.</th>
+                  <th>Student Name</th>
+                  <th style="width:90px;">Section</th>
+                  <th style="width:110px;">AL1</th>
+                  <th style="width:110px;">AL2</th>
+                  <th style="width:110px;">SSA1</th>
+                  <th style="width:110px;">SSA2</th>
+                </tr>
+              </thead>
+              <tbody id="uhvManualMarksBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
       <!-- ── Tracker Tab ─────────────────────────────────────── -->
       <section class="tab-panel" id="tabTracker">
         <div class="page-title">
@@ -192,6 +256,8 @@
           </div>
           <button class="clear-btn" id="downloadGradedReportBtn" title="Download full graded report">📊 Download
             Graded Report</button>
+          <button class="clear-btn uhv-marks-download-btn" id="downloadUhvMarksListBtn"
+            title="Download UHV marks list (AL1, AL2, SSA1, SSA2)">📝 Download UHV Marks List</button>
           <button class="clear-btn" id="clearDataBtn" title="Archive current tests to start a new one">🗑️ Clear Tracker
             (New Test)</button>
         </div>
@@ -307,7 +373,7 @@
   <div id="toast" class="toast"></div>
 
   <script src="students-db.js?v=20260402c"></script>
-  <script src="staff-dashboard.js?v=20260402d"></script>
+  <script src="staff-dashboard.js?v=20260404a"></script>
 </body>
 
 </html>

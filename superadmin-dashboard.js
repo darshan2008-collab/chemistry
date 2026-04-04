@@ -133,6 +133,53 @@
         }
     }
 
+    async function refreshStudents() {
+        const list = document.getElementById('studentsList');
+        if (!list) return;
+        list.innerHTML = 'Loading...';
+        try {
+            const payload = await apiJson('/api/admin/students');
+            const students = payload.students || [];
+
+            if (!students.length) {
+                list.innerHTML = '<div class="list-item"><div class="meta">No students found.</div></div>';
+                return;
+            }
+
+            list.innerHTML = students.map((student) => `
+                <div class="list-item" style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
+                    <div style="flex:1;min-width:0;">
+                        <div class="name">${escapeHtml(student.full_name || '')}</div>
+                        <div class="meta">${escapeHtml(student.reg_no || '')} · ${escapeHtml(student.stream || 'Unspecified')} · ${escapeHtml(student.section || 'Unspecified')}</div>
+                    </div>
+                    <button class="btn ghost student-delete-btn" data-reg-no="${escapeHtml(student.reg_no || '')}" data-name="${escapeHtml(student.full_name || '')}" type="button" style="padding:6px 10px;font-size:0.85rem;border-color:#ffb8c7;color:#ffb8c7;">Delete</button>
+                </div>
+            `).join('');
+
+            list.querySelectorAll('.student-delete-btn').forEach((btn) => {
+                btn.addEventListener('click', async () => {
+                    const regNo = btn.dataset.regNo;
+                    const name = btn.dataset.name || regNo;
+                    if (!regNo) return;
+                    if (!confirm(`Delete student "${name}" (${regNo}) permanently? This removes assignments, login access, and related records.`)) {
+                        return;
+                    }
+                    try {
+                        await apiJson(`/api/admin/students/${encodeURIComponent(regNo)}`, { method: 'DELETE' });
+                        toast(`Student "${name}" deleted`);
+                        await refreshStudents();
+                    } catch (err) {
+                        if (String(err?.message || '').toLowerCase().includes('unauthorized')) return;
+                        alert(`Error deleting student: ${err.message}`);
+                    }
+                });
+            });
+        } catch (err) {
+            if (String(err?.message || '').toLowerCase().includes('unauthorized')) return;
+            list.innerHTML = '<div class="list-item"><div class="meta" style="color:#ffb8c7">Failed to load student list.</div></div>';
+        }
+    }
+
     function escapeHtml(v) {
         return String(v || '')
             .replace(/&/g, '&amp;')
@@ -140,6 +187,23 @@
             .replace(/>/g, '&gt;')
             .replace(/"/g, '&quot;')
             .replace(/'/g, '&#39;');
+    }
+
+    function parseImportStreamSection(input) {
+        const raw = String(input || '').trim();
+        if (!raw) return { stream: '', section: '' };
+
+        const match = raw.match(/^(.+?)[\s-]+([A-Za-z0-9]+)$/);
+        if (!match) {
+            return { stream: raw.toUpperCase(), section: '' };
+        }
+
+        const stream = String(match[1] || '').trim().toUpperCase();
+        const section = String(match[2] || '').trim().toUpperCase();
+        if (!stream || !section) {
+            return { stream: raw.toUpperCase(), section: '' };
+        }
+        return { stream, section };
     }
 
     document.getElementById('staffForm').addEventListener('submit', async (e) => {
@@ -181,11 +245,15 @@
         const msg = document.getElementById('importMsg');
         msg.textContent = '';
 
-        const stream = String(document.getElementById('stream').value || '').trim();
+        const streamInput = String(document.getElementById('stream').value || '').trim();
+        const sectionInput = String(document.getElementById('importSection')?.value || '').trim();
+        const parsed = parseImportStreamSection(streamInput);
+        const stream = parsed.stream;
+        const section = String(sectionInput || parsed.section || '').trim().toUpperCase();
         const file = document.getElementById('studentFile').files?.[0];
-        if (!stream) {
+        if (!section) {
             msg.style.color = '#ffb8c7';
-            msg.textContent = 'Target Department is required.';
+            msg.textContent = 'Target Section is required.';
             return;
         }
         if (!file) {
@@ -197,7 +265,8 @@
         try {
             const formData = new FormData();
             formData.append('file', file);
-            formData.append('stream', stream);
+            if (stream) formData.append('stream', stream);
+            if (section) formData.append('section', section);
             const payload = await apiJson('/api/admin/students/import', {
                 method: 'POST',
                 body: formData,
@@ -206,14 +275,98 @@
             const streamInfo = Object.entries(payload.streams || {})
                 .map(([k, v]) => `${k}: ${v}`)
                 .join(', ');
+            const sectionInfo = Object.entries(payload.sections || {})
+                .map(([k, v]) => `${k}: ${v}`)
+                .join(', ');
 
             msg.style.color = '#9de9ff';
-            msg.textContent = `Processed ${payload.total} rows (new: ${payload.inserted || 0}, updated: ${payload.updated || 0}, unchanged: ${payload.skipped || 0})${streamInfo ? ' · ' + streamInfo : ''}`;
+            msg.textContent = `Processed ${payload.total} rows (new: ${payload.inserted || 0}, updated: ${payload.updated || 0}, unchanged: ${payload.skipped || 0})${streamInfo ? ' · Depts: ' + streamInfo : ''}${sectionInfo ? ' · Sections: ' + sectionInfo : ''}`;
             toast('Student import complete');
             document.getElementById('studentFile').value = '';
+            const sectionInputEl = document.getElementById('importSection');
+            if (sectionInputEl) sectionInputEl.value = '';
+            await refreshStudents();
         } catch (err) {
             msg.style.color = '#ffb8c7';
             msg.textContent = err.message || 'Import failed';
+        }
+    });
+
+    document.getElementById('manualImportForm')?.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        const msg = document.getElementById('manualImportMsg');
+        if (!msg) return;
+        msg.textContent = '';
+
+        const regNoInput = String(document.getElementById('manualRegNo')?.value || '').trim().toUpperCase();
+        const fullNameInput = String(document.getElementById('manualFullName')?.value || '').trim();
+        const passwordInput = String(document.getElementById('manualPassword')?.value || '');
+        const streamInput = String(document.getElementById('manualStream')?.value || '').trim();
+        const sectionInput = String(document.getElementById('manualSection')?.value || '').trim();
+
+        const parsed = parseImportStreamSection(streamInput);
+        const stream = parsed.stream;
+        const section = String(sectionInput || parsed.section || '').trim().toUpperCase();
+
+        if (!regNoInput || !fullNameInput) {
+            msg.style.color = '#ffb8c7';
+            msg.textContent = 'Register number and student name are required.';
+            return;
+        }
+
+        if (!passwordInput || passwordInput.length < 6) {
+            msg.style.color = '#ffb8c7';
+            msg.textContent = 'Password is required and must be at least 6 characters.';
+            return;
+        }
+
+        if (!section) {
+            msg.style.color = '#ffb8c7';
+            msg.textContent = 'Target Section is required.';
+            return;
+        }
+
+        try {
+            const formData = new FormData();
+            if (stream) formData.append('stream', stream);
+            formData.append('section', section);
+            formData.append('manualStudents', `${regNoInput} | ${fullNameInput} | ${stream || ''} | ${section}`);
+
+            const payload = await apiJson('/api/admin/students/import', {
+                method: 'POST',
+                body: formData,
+            });
+
+            await apiJson(`/api/superadmin/student-passwords/${encodeURIComponent(regNoInput)}/reset`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ password: passwordInput }),
+            });
+
+            const streamInfo = Object.entries(payload.streams || {})
+                .map(([k, v]) => `${k}: ${v}`)
+                .join(', ');
+            const sectionInfo = Object.entries(payload.sections || {})
+                .map(([k, v]) => `${k}: ${v}`)
+                .join(', ');
+
+            msg.style.color = '#9de9ff';
+            msg.textContent = `Processed ${payload.total} rows (new: ${payload.inserted || 0}, updated: ${payload.updated || 0}, unchanged: ${payload.skipped || 0})${streamInfo ? ' · Depts: ' + streamInfo : ''}${sectionInfo ? ' · Sections: ' + sectionInfo : ''}`;
+            toast('Manual students saved');
+
+            const manualRegNoEl = document.getElementById('manualRegNo');
+            if (manualRegNoEl) manualRegNoEl.value = '';
+            const manualFullNameEl = document.getElementById('manualFullName');
+            if (manualFullNameEl) manualFullNameEl.value = '';
+            const manualPasswordEl = document.getElementById('manualPassword');
+            if (manualPasswordEl) manualPasswordEl.value = '';
+            const manualSectionEl = document.getElementById('manualSection');
+            if (manualSectionEl) manualSectionEl.value = '';
+
+            await refreshStudents();
+        } catch (err) {
+            msg.style.color = '#ffb8c7';
+            msg.textContent = err.message || 'Manual import failed';
         }
     });
 
@@ -237,6 +390,11 @@
         });
     }
 
+    const refreshStudentsBtn = document.getElementById('refreshStudentsBtn');
+    if (refreshStudentsBtn) {
+        refreshStudentsBtn.addEventListener('click', () => refreshStudents());
+    }
+
     document.getElementById('refreshBtn').addEventListener('click', refreshStaff);
 
     document.getElementById('logoutBtn').addEventListener('click', () => {
@@ -246,6 +404,7 @@
     });
 
     function initSuperAdminMenu() {
+        refreshStudents();
         const menuButtons = Array.from(document.querySelectorAll('.admin-menu-btn'));
         const panels = Array.from(document.querySelectorAll('.menu-panel'));
         if (!menuButtons.length || !panels.length) return;
@@ -273,6 +432,9 @@
             if (targetKey === 'operations') {
                 if (typeof refreshDbStatus === 'function') refreshDbStatus();
                 if (typeof refreshSubjects === 'function') refreshSubjects();
+            }
+            if (targetKey === 'passwords' && typeof refreshPasswords === 'function') {
+                refreshPasswords();
             }
         }
 
@@ -309,6 +471,7 @@
     let refreshAssignments = () => { };
     let refreshDbStatus = () => { };
     let refreshSubjects = () => { };
+    let refreshPasswords = () => { };
 
     function initAssignmentPanel() {
         const mount = document.getElementById('assignmentsMount');
@@ -341,7 +504,9 @@
                         </div>
                         <div class="col">
                             <select id="assignSectionFilter" class="input-select" style="width:100%;height:100%;background:var(--panel-strong);border:1px solid var(--line);border-radius:12px;color:var(--text);padding:0 12px;">
-                                <option value="all">All Sections</option>
+                                <option value="" selected disabled>Select Section (A3/A7)</option>
+                                <option value="A3">A3</option>
+                                <option value="A7">A7</option>
                             </select>
                         </div>
                         </div>
@@ -401,11 +566,30 @@
 
         function extractMetadata(s) {
             if (s && s.stream && s.section) {
-                return { dept: s.stream, sec: s.section, streamName: `${s.stream}-${s.section}` };
+                const rawStream = String(s.stream || '').trim().toUpperCase();
+                const rawSec = String(s.section || '').trim().toUpperCase();
+                const combined = `${rawStream} ${rawSec}`;
+
+                // Support legacy combined formats like "AIDS-A7" or "AIDS-A-A7-C".
+                const strictSecMatch = combined.match(/A[37]/);
+                const secMatch = rawSec.match(/([A-Z]\d+)$/);
+                const sec = strictSecMatch ? strictSecMatch[0] : (secMatch ? secMatch[1] : rawSec);
+
+                let dept = rawStream
+                    .replace(/[-_\s]*A[37]\b/g, '')
+                    .replace(/[-_\s]+$/, '')
+                    .trim();
+                if (!dept) {
+                    const deptFromSection = rawSec.match(/^([A-Z]+)/);
+                    dept = deptFromSection ? deptFromSection[1] : 'OTHER';
+                }
+
+                const sectionTag = (dept && sec) ? `${dept}-${sec}` : (sec || 'Unknown');
+                return { dept, sec, sectionTag, streamName: sectionTag };
             }
             const regNo = String(s.reg_no || s || '').trim();
             const match = regNo.match(/([A-Z]+)(\d+)$/i);
-            if (!match) return { dept: 'OTHER', sec: 'Unknown', streamName: 'Other' };
+            if (!match) return { dept: 'OTHER', sec: 'Unknown', sectionTag: 'Unknown', streamName: 'Other' };
 
             const deptCode = match[1].toUpperCase();
             const rollInt = parseInt(match[2], 10);
@@ -444,21 +628,20 @@
                 sectionLetter = 'A';
             }
 
-            return { dept: deptLabel, sec: sectionLetter, streamName: `${deptLabel}-${sectionLetter}` };
+            const dept = String(deptLabel || '').trim().toUpperCase();
+            const sec = String(sectionLetter || '').trim().toUpperCase();
+            const sectionTag = (dept && sec) ? `${dept}-${sec}` : (sec || 'Unknown');
+            return { dept, sec, sectionTag, streamName: `${dept}-${sec}` };
         }
 
         function populateFilters() {
             const deptSet = new Set();
-            const secSet = new Set();
             allStudents.forEach(s => {
-                const { dept, sec } = extractMetadata(s);
+                const { dept } = extractMetadata(s);
                 if (dept && dept !== 'OTHER') deptSet.add(dept);
-                if (sec && sec !== 'Unknown') secSet.add(sec);
             });
             deptFilter.innerHTML = '<option value="all">All Departments</option>' +
                 Array.from(deptSet).sort().map(d => `<option value="${d}">${d}</option>`).join('');
-            sectionFilter.innerHTML = '<option value="all">All Sections</option>' +
-                Array.from(secSet).sort().map(s => `<option value="${s}">${s}</option>`).join('');
         }
 
         function setMsg(text, isError = false) {
@@ -486,13 +669,18 @@
         function renderStudentOptions() {
             const q = String(studentSearch.value || '').trim().toLowerCase();
             const dVal = deptFilter.value;
-            const sVal = sectionFilter.value;
+            const sVal = String(sectionFilter.value || '').trim().toUpperCase();
+
+            if (!['A3', 'A7'].includes(sVal)) {
+                studentList.innerHTML = '<div style="padding:16px;text-align:center;color:var(--muted);">Select Section A3 or A7 to view students</div>';
+                return;
+            }
 
             const filtered = allStudents.filter((s) => {
                 const { dept, sec } = extractMetadata(s);
                 const mQuery = !q || String(s.reg_no || '').toLowerCase().includes(q) || String(s.full_name || '').toLowerCase().includes(q);
                 const mDept = dVal === 'all' || dVal === dept;
-                const mSec = sVal === 'all' || sVal === sec;
+                const mSec = sVal === sec;
 
                 return mQuery && mDept && mSec;
             });
@@ -544,24 +732,32 @@
         }
 
         async function loadOptions() {
-            try {
-                const [studentsPayload, staffPayload, subjectsPayload] = await Promise.all([
-                    apiJson('/api/admin/students'),
-                    apiJson('/api/admin/staff'),
-                    apiJson('/api/admin/subjects'),
-                ]);
+            const [studentsResult, staffResult, subjectsResult] = await Promise.allSettled([
+                apiJson('/api/admin/students'),
+                apiJson('/api/admin/staff'),
+                apiJson('/api/admin/subjects'),
+            ]);
 
-                const students = (studentsPayload.students || []).filter((s) => s.reg_no);
-                const staff = (staffPayload.staff || []).filter((s) => s.email && s.is_active);
-                const subjects = (subjectsPayload.subjects || []).filter((s) => s.id && s.is_active);
+            const students = studentsResult.status === 'fulfilled'
+                ? (studentsResult.value.students || []).filter((s) => s.reg_no)
+                : [];
+            const staff = staffResult.status === 'fulfilled'
+                ? (staffResult.value.staff || []).filter((s) => s.email && s.is_active)
+                : [];
+            const subjects = subjectsResult.status === 'fulfilled'
+                ? (subjectsResult.value.subjects || []).filter((s) => s.id && s.is_active)
+                : [];
 
-                allStudents = students;
-                populateFilters();
-                renderStudentOptions();
-                fillSelect(staffSel, staff, 'email', (s) => `${s.full_name || s.email || ''}`);
-                fillSelect(subjectSel, subjects, 'id', (s) => `${s.name || ''}`);
-            } catch (err) {
-                setMsg(err.message || 'Failed to load dropdown data', true);
+            allStudents = students;
+            populateFilters();
+            renderStudentOptions();
+            fillSelect(staffSel, staff, 'email', (s) => `${s.full_name || s.email || ''}`);
+            fillSelect(subjectSel, subjects, 'id', (s) => `${s.name || ''}`);
+
+            const failures = [studentsResult, staffResult, subjectsResult].filter((result) => result.status === 'rejected');
+            if (failures.length) {
+                const subjectFailure = subjectsResult.status === 'rejected' ? subjectsResult.reason : null;
+                setMsg(subjectFailure?.message || 'Some dropdown data could not be loaded. You can still work with the data that did load.', true);
             }
         }
 
@@ -578,12 +774,52 @@
                     matrix.innerHTML = '<div class="list-item"><div class="meta">No assignments found.</div></div>';
                     return;
                 }
-                matrix.innerHTML = assignments.map((a) => `
-                    <div class="list-item">
-                        <div class="name">${escapeHtml(a.student_name || a.reg_no)} → ${escapeHtml(a.staff_name || a.staff_email)}</div>
-                        <div class="meta">${escapeHtml(a.reg_no || '')} · ${escapeHtml(a.staff_email || '')} · ${escapeHtml(a.subject_code || '')}</div>
-                    </div>
-                `).join('');
+
+                const bySubject = new Map();
+                assignments.forEach((a) => {
+                    const subjectCode = String(a.subject_code || '').trim() || 'Unspecified Subject';
+                    const subjectName = String(a.subject_name || '').trim();
+                    const subjectLabel = subjectName ? `${subjectCode} - ${subjectName}` : subjectCode;
+
+                    if (!bySubject.has(subjectLabel)) {
+                        bySubject.set(subjectLabel, {
+                            students: [],
+                            studentSet: new Set(),
+                            staffSet: new Set(),
+                        });
+                    }
+
+                    const entry = bySubject.get(subjectLabel);
+                    const regNo = String(a.reg_no || '').trim();
+                    const studentLabel = String(a.student_name || regNo || '').trim();
+                    const studentKey = regNo || studentLabel;
+                    if (studentLabel && !entry.studentSet.has(studentKey)) {
+                        entry.studentSet.add(studentKey);
+                        entry.students.push(studentLabel);
+                    }
+
+                    const staffLabel = String(a.staff_name || a.staff_email || '').trim();
+                    if (staffLabel) {
+                        entry.staffSet.add(staffLabel);
+                    }
+                });
+
+                matrix.innerHTML = Array.from(bySubject.entries()).map(([subjectLabel, entry]) => {
+                    const studentNames = entry.students
+                        .map((name) => escapeHtml(name))
+                        .join(', ');
+                    const staffNames = Array.from(entry.staffSet)
+                        .map((name) => escapeHtml(name))
+                        .join(', ');
+
+                    return `
+                        <div class="list-item">
+                            <div class="name">${escapeHtml(subjectLabel)}</div>
+                            <div class="meta">Assigned staff: ${staffNames || 'Not specified'}</div>
+                            <div class="meta" style="margin-top:6px;line-height:1.5;">Students: ${studentNames || 'No students assigned'}</div>
+                        </div>
+                    `;
+                }).join('');
             } catch (err) {
                 matrix.innerHTML = `<div class="list-item"><div class="meta" style="color:#ffb8c7">${escapeHtml(err.message || 'Failed to load assignment matrix')}</div></div>`;
             }
@@ -594,6 +830,12 @@
             const selectedRegNos = getSelectedStudentRegNos();
             const staffEmail = String(staffSel.value || '').trim();
             const subjectId = Number(subjectSel.value || 0);
+            const requiredSection = String(sectionFilter.value || '').trim().toUpperCase();
+
+            if (!['A3', 'A7'].includes(requiredSection)) {
+                setMsg('Section is compulsory. Please select A3 or A7.', true);
+                return;
+            }
 
             if (!selectedRegNos.length || !staffEmail || !subjectId) {
                 setMsg('Select students, teacher, and subject first', true);
@@ -618,9 +860,14 @@
         mount.querySelector('#assignAllFilteredBtn').addEventListener('click', async () => {
             const q = String(studentSearch.value || '').trim().toLowerCase();
             const dVal = deptFilter.value;
-            const sVal = sectionFilter.value;
+            const sVal = String(sectionFilter.value || '').trim().toUpperCase();
             const staffEmail = String(staffSel.value || '').trim();
             const subjectId = Number(subjectSel.value || 0);
+
+            if (!['A3', 'A7'].includes(sVal)) {
+                setMsg('Section is compulsory. Please select A3 or A7.', true);
+                return;
+            }
 
             if (!staffEmail || !subjectId) {
                 setMsg('Select teacher and subject first', true);
@@ -631,7 +878,7 @@
                 const { dept, sec } = extractMetadata(s);
                 const mQuery = !q || String(s.reg_no || '').toLowerCase().includes(q) || String(s.full_name || '').toLowerCase().includes(q);
                 const mDept = dVal === 'all' || dVal === dept;
-                const mSec = sVal === 'all' || sVal === sec;
+                const mSec = sVal === sec;
                 return mQuery && mDept && mSec;
             }).map((s) => s.reg_no);
 
@@ -779,6 +1026,18 @@
                 <div id="opsDbStatus" class="list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:12px;"></div>
             </section>
 
+            <section class="card" style="margin-bottom:20px;border-color:var(--accent);">
+                <div class="head-row" style="margin-bottom:12px;">
+                    <h3 style="font-size:1rem;margin:0;">Live Users On Website</h3>
+                    <div style="display:flex;align-items:center;gap:10px;">
+                        <span id="opsLiveUsersTime" style="font-size:0.8rem;color:var(--muted);"></span>
+                        <button class="btn ghost" id="opsRefreshLiveUsersBtn" type="button" style="padding:6px 10px;font-size:0.75rem;">Refresh Users</button>
+                    </div>
+                </div>
+                <div id="opsLiveUsersSummary" class="list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:12px;"></div>
+                <div id="opsLiveUsersList" class="list"></div>
+            </section>
+
             <div class="grid">
                 <form id="opsStaffActionForm" class="form card" novalidate>
                     <h3>Staff Quick Actions</h3>
@@ -839,6 +1098,86 @@
         const subjectCancelBtn = mount.querySelector('#opsSubjectCancelBtn');
         const subjectCodeInput = mount.querySelector('#opsSubjectCode');
         const subjectNameInput = mount.querySelector('#opsSubjectName');
+
+        function formatLastSeenAgo(lastSeenAt) {
+            const ts = Number(lastSeenAt || 0);
+            if (!ts) return 'unknown';
+            const diffSec = Math.max(0, Math.floor((Date.now() - ts) / 1000));
+            if (diffSec < 60) return `${diffSec}s ago`;
+            const diffMin = Math.floor(diffSec / 60);
+            if (diffMin < 60) return `${diffMin}m ago`;
+            const diffHr = Math.floor(diffMin / 60);
+            return `${diffHr}h ago`;
+        }
+
+        async function refreshLiveUsers() {
+            const summaryEl = mount.querySelector('#opsLiveUsersSummary');
+            const listEl = mount.querySelector('#opsLiveUsersList');
+            const timeEl = mount.querySelector('#opsLiveUsersTime');
+            if (!summaryEl || !listEl || !timeEl) return;
+
+            summaryEl.innerHTML = 'Loading...';
+            listEl.innerHTML = '';
+
+            try {
+                const payload = await apiJson('/api/superadmin/active-users/live');
+                const sessions = Array.isArray(payload.sessions) ? payload.sessions : [];
+                const now = Date.now();
+                const onlineWindowMs = 2 * 60 * 1000;
+                const onlineNow = sessions.filter((s) => {
+                    const seen = Number(s?.lastSeenAt || 0);
+                    return seen > 0 && (now - seen) <= onlineWindowMs;
+                });
+
+                const studentCount = onlineNow.filter((s) => String(s.role || '').toLowerCase() === 'student').length;
+                const staffCount = onlineNow.filter((s) => String(s.role || '').toLowerCase() === 'staff').length;
+
+                summaryEl.innerHTML = `
+                    <div class="list-item" style="display:flex;justify-content:space-between;align-items:center;">
+                        <div class="name">Online Now</div>
+                        <div class="meta" style="font-weight:700;color:var(--accent);">${onlineNow.length}</div>
+                    </div>
+                    <div class="list-item" style="display:flex;justify-content:space-between;align-items:center;">
+                        <div class="name">Students</div>
+                        <div class="meta" style="font-weight:700;color:var(--text);">${studentCount}</div>
+                    </div>
+                    <div class="list-item" style="display:flex;justify-content:space-between;align-items:center;">
+                        <div class="name">Staff</div>
+                        <div class="meta" style="font-weight:700;color:var(--text);">${staffCount}</div>
+                    </div>
+                `;
+
+                if (!onlineNow.length) {
+                    listEl.innerHTML = '<div class="list-item"><div class="meta">No users active in the last 2 minutes.</div></div>';
+                } else {
+                    listEl.innerHTML = onlineNow
+                        .sort((a, b) => Number(b.lastSeenAt || 0) - Number(a.lastSeenAt || 0))
+                        .map((s) => {
+                            const role = String(s.role || '').toLowerCase() === 'student' ? 'Student' : 'Staff';
+                            const identity = role === 'Student'
+                                ? (s.regNo || s.name || 'Unknown Student')
+                                : (s.email || s.name || 'Unknown Staff');
+                            const displayName = s.name && s.name !== identity ? `${s.name}` : '';
+                            return `
+                                <div class="list-item" style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
+                                    <div style="min-width:0;flex:1;">
+                                        <div class="name">${escapeHtml(identity)}</div>
+                                        <div class="meta">${escapeHtml(role)}${displayName ? ` · ${escapeHtml(displayName)}` : ''}</div>
+                                    </div>
+                                    <div class="meta" style="white-space:nowrap;">Active ${escapeHtml(formatLastSeenAgo(s.lastSeenAt))}</div>
+                                </div>
+                            `;
+                        }).join('');
+                }
+
+                const stamp = payload.serverTime ? new Date(payload.serverTime) : new Date();
+                timeEl.textContent = `Updated: ${stamp.toLocaleTimeString()}`;
+            } catch (err) {
+                summaryEl.innerHTML = '<div class="list-item"><div class="meta" style="color:#ffb8c7;">Failed to load live users.</div></div>';
+                listEl.innerHTML = `<div class="list-item"><div class="meta" style="color:#ffb8c7;">${escapeHtml(err.message || 'Failed to fetch active users')}</div></div>`;
+                timeEl.textContent = '';
+            }
+        }
 
         refreshDbStatus = async function () {
             const list = mount.querySelector('#opsDbStatus');
@@ -987,7 +1326,16 @@
                     });
                 });
             } catch (err) {
-                list.innerHTML = `<div class="list-item"><div class="meta" style="color:#ffb8c7;">${escapeHtml(err.message || 'Failed to load subjects')}</div></div>`;
+                list.innerHTML = `
+                    <div class="list-item">
+                        <div class="meta" style="color:#ffb8c7;">${escapeHtml(err.message || 'Failed to load subjects')}</div>
+                        <button class="btn ghost" type="button" id="opsSubjectRetryBtn" style="margin-top:8px;padding:6px 10px;">Retry</button>
+                    </div>
+                `;
+                const retryBtn = list.querySelector('#opsSubjectRetryBtn');
+                if (retryBtn) {
+                    retryBtn.addEventListener('click', () => refreshSubjects());
+                }
             }
         }
 
@@ -1123,9 +1471,258 @@
 
         mount.querySelector('#opsRefreshDbStatusBtn').addEventListener('click', refreshDbStatus);
         mount.querySelector('#opsRefreshAuditBtn').addEventListener('click', refreshAudit);
+        const refreshLiveUsersBtn = mount.querySelector('#opsRefreshLiveUsersBtn');
+        if (refreshLiveUsersBtn) refreshLiveUsersBtn.addEventListener('click', refreshLiveUsers);
         refreshDbStatus();
         refreshSubjects();
         refreshAudit();
+        refreshLiveUsers();
+        setInterval(() => {
+            refreshLiveUsers().catch(() => { });
+        }, 10000);
+    }
+
+    function initPasswordPanel() {
+        const mount = document.getElementById('passwordsMount');
+        if (!mount) return;
+
+        mount.innerHTML = `
+            <div class="head-row" style="margin-bottom:20px;">
+                <h2>Password Management</h2>
+                <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap;">
+                    <button class="btn ghost" id="pwdRefreshBtn" type="button">Refresh Passwords</button>
+                    <span id="pwdUpdatedAt" style="font-size:0.8rem;color:var(--muted);"></span>
+                </div>
+            </div>
+
+            <section class="card" style="margin-bottom:20px;border-color:var(--accent);">
+                <div class="row">
+                    <div class="col">
+                        <label for="pwdSearch">Search Student</label>
+                        <input id="pwdSearch" type="text" placeholder="Enter student name (optional)" />
+                    </div>
+                    <div class="col">
+                        <label for="pwdTargetRegNo">Register Number (Compulsory)</label>
+                        <input id="pwdTargetRegNo" type="text" placeholder="Enter register number (required) or choose below" />
+                    </div>
+                    <div class="col">
+                        <label for="pwdNewPassword">New Password</label>
+                        <div style="display:flex;gap:8px;align-items:center;">
+                            <input id="pwdNewPassword" type="password" placeholder="Min 6 characters" style="flex:1;" />
+                            <button class="btn ghost" id="pwdToggleVisibility" type="button" style="padding:8px 12px;min-width:88px;">Show</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="btn-group" style="margin-top:12px;">
+                    <button class="btn primary" id="pwdSaveBtn" type="button">Set Student Password</button>
+                    <button class="btn ghost" id="pwdGenerateBtn" type="button">Generate & Show Temp Password</button>
+                    <button class="btn ghost" id="pwdClearBtn" type="button">Clear</button>
+                </div>
+                <p id="pwdMsg" class="msg"></p>
+                <p class="meta" style="margin-top:8px;">Note: existing changed passwords cannot be revealed from secure hashes. Use temporary reset to view a new password.</p>
+            </section>
+
+            <section class="card" style="margin-bottom:20px;border-color:var(--accent-3);">
+                <div class="head-row" style="margin-bottom:12px;">
+                    <h3 style="font-size:1rem;margin:0;">Password Status Summary</h3>
+                </div>
+                <div id="pwdSummary" class="list" style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;"></div>
+            </section>
+
+            <section class="card">
+                <div class="head-row" style="margin-bottom:12px;">
+                    <h3 style="font-size:1rem;margin:0;">Student Password Records</h3>
+                    <input id="pwdQuickSearch" type="text" placeholder="Search by Name or Register Number" style="max-width:320px;" />
+                </div>
+                <div id="pwdList" class="list"></div>
+            </section>
+        `;
+
+        const searchEl = mount.querySelector('#pwdSearch');
+        const quickSearchEl = mount.querySelector('#pwdQuickSearch');
+        const regNoEl = mount.querySelector('#pwdTargetRegNo');
+        const newPasswordEl = mount.querySelector('#pwdNewPassword');
+        const toggleVisibilityEl = mount.querySelector('#pwdToggleVisibility');
+        const msgEl = mount.querySelector('#pwdMsg');
+        const listEl = mount.querySelector('#pwdList');
+        const summaryEl = mount.querySelector('#pwdSummary');
+        const updatedAtEl = mount.querySelector('#pwdUpdatedAt');
+
+        function setMsg(text, isError = false) {
+            msgEl.style.color = isError ? '#ffb8c7' : '#9de9ff';
+            msgEl.textContent = text;
+        }
+
+        function formatTime(value) {
+            if (!value) return 'Unknown';
+            const date = new Date(value);
+            return Number.isNaN(date.getTime()) ? 'Unknown' : date.toLocaleString();
+        }
+
+        function generateTempPassword() {
+            const chars = 'ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789@#';
+            let out = '';
+            for (let i = 0; i < 10; i += 1) {
+                out += chars.charAt(Math.floor(Math.random() * chars.length));
+            }
+            return out;
+        }
+
+        async function loadPasswords() {
+            const q = String((quickSearchEl?.value || searchEl.value || '')).trim();
+            summaryEl.innerHTML = 'Loading...';
+            listEl.innerHTML = 'Loading...';
+            try {
+                const payload = await apiJson(`/api/superadmin/student-passwords${q ? `?q=${encodeURIComponent(q)}` : ''}`);
+                const students = payload.students || [];
+                const summary = payload.summary || {};
+
+                summaryEl.innerHTML = `
+                    <div class="list-item" style="display:flex;justify-content:space-between;align-items:center;">
+                        <div class="name">Total Students</div>
+                        <div class="meta" style="font-weight:700;">${summary.total || 0}</div>
+                    </div>
+                    <div class="list-item" style="display:flex;justify-content:space-between;align-items:center;">
+                        <div class="name">Password Changed</div>
+                        <div class="meta" style="font-weight:700;color:var(--accent);">${summary.changed || 0}</div>
+                    </div>
+                    <div class="list-item" style="display:flex;justify-content:space-between;align-items:center;">
+                        <div class="name">Still Default</div>
+                        <div class="meta" style="font-weight:700;">${summary.default || 0}</div>
+                    </div>
+                    <div class="list-item" style="display:flex;justify-content:space-between;align-items:center;">
+                        <div class="name">Student Changes Logged</div>
+                        <div class="meta" style="font-weight:700;">${summary.studentChanges || 0}</div>
+                    </div>
+                    <div class="list-item" style="display:flex;justify-content:space-between;align-items:center;">
+                        <div class="name">Admin Resets Logged</div>
+                        <div class="meta" style="font-weight:700;">${summary.adminResets || 0}</div>
+                    </div>
+                `;
+
+                if (!students.length) {
+                    listEl.innerHTML = '<div class="list-item"><div class="meta">No matching student records found.</div></div>';
+                } else {
+                    listEl.innerHTML = students.map((s) => {
+                        const statusLabel = s.password_changed ? 'Changed' : 'Default';
+                        const sourceLabel = s.last_source ? String(s.last_source).toUpperCase() : 'SYSTEM';
+                        const currentPasswordLabel = s.password_changed
+                            ? 'Hidden (secure hash)'
+                            : String(s.reg_no || '');
+                        return `
+                            <div class="list-item" style="display:flex;justify-content:space-between;align-items:center;gap:12px;">
+                                <div style="min-width:0;flex:1;">
+                                    <div class="name">${escapeHtml(s.reg_no || '')} · ${escapeHtml(s.full_name || '')}</div>
+                                    <div class="meta">${escapeHtml(s.stream || 'Unspecified')} · ${escapeHtml(s.section || 'Unspecified')} · Status: ${escapeHtml(statusLabel)} · Last change: ${escapeHtml(formatTime(s.last_changed_at || s.auth_updated_at))}</div>
+                                    <div class="meta">Current password: ${escapeHtml(currentPasswordLabel)}</div>
+                                    <div class="meta">Last updated by: ${escapeHtml(s.last_changed_by || 'system')} · Source: ${escapeHtml(sourceLabel)} · History: ${escapeHtml(String(s.history_count || 0))}</div>
+                                </div>
+                                <button class="btn ghost pwd-fill-btn" type="button" data-regno="${escapeHtml(s.reg_no || '')}" data-name="${escapeHtml(s.full_name || '')}" style="padding:6px 10px;font-size:0.82rem;">Edit</button>
+                            </div>
+                        `;
+                    }).join('');
+
+                    listEl.querySelectorAll('.pwd-fill-btn').forEach((btn) => {
+                        btn.addEventListener('click', () => {
+                            regNoEl.value = btn.dataset.regno || '';
+                            newPasswordEl.focus();
+                            setMsg(`Ready to update ${btn.dataset.regno || ''}`);
+                        });
+                    });
+                }
+
+                updatedAtEl.textContent = `Updated: ${new Date().toLocaleTimeString()}`;
+            } catch (err) {
+                summaryEl.innerHTML = '<div class="list-item"><div class="meta" style="color:#ffb8c7;">Failed to load password summary.</div></div>';
+                listEl.innerHTML = `<div class="list-item"><div class="meta" style="color:#ffb8c7;">${escapeHtml(err.message || 'Failed to load password records')}</div></div>`;
+                updatedAtEl.textContent = '';
+            }
+        }
+
+        async function savePassword() {
+            const regNo = String(regNoEl.value || '').trim().toUpperCase();
+            const password = String(newPasswordEl.value || '');
+            if (!regNo || !password) {
+                setMsg('Register number is compulsory and new password is required', true);
+                return;
+            }
+            if (password.length < 6) {
+                setMsg('Password must be at least 6 characters', true);
+                return;
+            }
+
+            try {
+                setMsg('Updating password...', false);
+                await apiJson(`/api/superadmin/student-passwords/${encodeURIComponent(regNo)}/reset`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password }),
+                });
+                setMsg(`Password updated for ${regNo}`);
+                toast('Student password updated');
+                newPasswordEl.value = '';
+                await loadPasswords();
+            } catch (err) {
+                setMsg(err.message || 'Failed to update password', true);
+            }
+        }
+
+        async function generateAndSetTempPassword() {
+            const regNo = String(regNoEl.value || '').trim().toUpperCase();
+            if (!regNo) {
+                setMsg('Register number is compulsory', true);
+                return;
+            }
+
+            const tempPassword = generateTempPassword();
+            try {
+                setMsg('Generating temporary password...', false);
+                await apiJson(`/api/superadmin/student-passwords/${encodeURIComponent(regNo)}/reset`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ password: tempPassword }),
+                });
+                newPasswordEl.value = tempPassword;
+                setMsg(`Temporary password for ${regNo}: ${tempPassword}`);
+                toast(`Temporary password set for ${regNo}`);
+                await loadPasswords();
+            } catch (err) {
+                setMsg(err.message || 'Failed to generate temporary password', true);
+            }
+        }
+
+        mount.querySelector('#pwdSaveBtn').addEventListener('click', savePassword);
+        mount.querySelector('#pwdGenerateBtn').addEventListener('click', generateAndSetTempPassword);
+        if (toggleVisibilityEl) {
+            toggleVisibilityEl.addEventListener('click', () => {
+                const reveal = newPasswordEl.type === 'password';
+                newPasswordEl.type = reveal ? 'text' : 'password';
+                toggleVisibilityEl.textContent = reveal ? 'Hide' : 'Show';
+            });
+        }
+        mount.querySelector('#pwdClearBtn').addEventListener('click', () => {
+            regNoEl.value = '';
+            newPasswordEl.value = '';
+            if (toggleVisibilityEl) toggleVisibilityEl.textContent = 'Show';
+            newPasswordEl.type = 'password';
+            searchEl.value = '';
+            if (quickSearchEl) quickSearchEl.value = '';
+            setMsg('Cleared password form');
+        });
+        mount.querySelector('#pwdRefreshBtn').addEventListener('click', loadPasswords);
+        searchEl.addEventListener('input', () => {
+            if (quickSearchEl) quickSearchEl.value = searchEl.value;
+            loadPasswords();
+        });
+        if (quickSearchEl) {
+            quickSearchEl.addEventListener('input', () => {
+                searchEl.value = quickSearchEl.value;
+                loadPasswords();
+            });
+        }
+
+        refreshPasswords = loadPasswords;
+        loadPasswords();
     }
 
     initSuperAdminMenu();
@@ -1138,6 +1735,11 @@
         initAdminOpsPanel();
     } catch (err) {
         console.error('Operations panel init failed:', err);
+    }
+    try {
+        initPasswordPanel();
+    } catch (err) {
+        console.error('Password panel init failed:', err);
     }
     refreshStaff();
 })();

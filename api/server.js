@@ -572,6 +572,20 @@ function verifyPassword(value, passwordHash) {
   return authUtils.verifyPassword(value, passwordHash);
 }
 
+async function recordStudentPasswordHistory(db, { regNo, passwordHash, source, changedBy, note }) {
+  await db.query(
+    `INSERT INTO student_password_history (reg_no, password_hash, source, changed_by, note, created_at)
+     VALUES ($1, $2, $3, $4, $5, NOW())`,
+    [
+      normalizeRegNo(regNo),
+      String(passwordHash || ''),
+      String(source || 'system'),
+      changedBy ? String(changedBy) : null,
+      note ? String(note) : null,
+    ]
+  );
+}
+
 async function createSession(payload) {
   const token = authUtils.createSessionToken();
   const now = Date.now();
@@ -648,7 +662,8 @@ async function requireSuperAdmin(req, res, next) {
     if (!session) {
       return res.status(401).json({ error: 'Unauthorized' });
     }
-    if (session.role !== 'staff' || !isSuperAdminSession(session)) {
+    const role = String(session.role || '').toLowerCase();
+    if ((role !== 'staff' && role !== 'superadmin') || !isSuperAdminSession(session)) {
       return res.status(403).json({ error: 'Forbidden' });
     }
     req.auth = session;
@@ -888,6 +903,7 @@ const backupTables = [
   'staff_accounts',
   'students',
   'student_auth',
+  'student_password_history',
   'staff_subject_assignments',
   'student_subject_assignments',
   'student_staff_subject_assignments',
@@ -941,10 +957,29 @@ app.post('/api/auth/student/login', loginRateLimitMiddleware, async (req, res, n
     }
 
     const result = await pool.query(
-      `SELECT BTRIM(s.reg_no) AS reg_no, s.full_name, a.password_hash, a.password_changed
-       FROM students s
-       JOIN student_auth a ON UPPER(BTRIM(a.reg_no)) = UPPER(BTRIM(s.reg_no))
-       WHERE UPPER(BTRIM(s.reg_no)) = UPPER(BTRIM($1))
+      `WITH auth_match AS (
+         SELECT
+           BTRIM(a.reg_no) AS reg_no,
+           a.password_hash,
+           a.password_changed,
+           a.updated_at,
+           (
+             SELECT s.full_name
+             FROM students s
+             WHERE UPPER(BTRIM(s.reg_no)) = UPPER(BTRIM(a.reg_no))
+             ORDER BY
+               CASE WHEN BTRIM(s.reg_no) = BTRIM(a.reg_no) THEN 0 ELSE 1 END,
+               s.created_at DESC
+             LIMIT 1
+           ) AS full_name
+         FROM student_auth a
+         WHERE UPPER(BTRIM(a.reg_no)) = UPPER(BTRIM($1))
+       )
+       SELECT reg_no, full_name, password_hash, password_changed
+       FROM auth_match
+       ORDER BY
+         CASE WHEN UPPER(reg_no) = UPPER(BTRIM($1)) THEN 0 ELSE 1 END,
+         updated_at DESC
        LIMIT 1`,
       [regNo]
     );
@@ -964,12 +999,30 @@ app.post('/api/auth/student/login', loginRateLimitMiddleware, async (req, res, n
     } else if (!verifyPassword(passwordTrimmed, row.password_hash)) {
       return res.status(401).json({ error: 'Invalid credentials' });
     } else if (!isBcryptHash(row.password_hash)) {
-      await pool.query(
-        `UPDATE student_auth
-         SET password_hash = $1, updated_at = NOW()
-         WHERE reg_no = $2`,
-        [hashPassword(passwordTrimmed), rowRegNo]
-      );
+      const normalizedHash = hashPassword(passwordTrimmed);
+      const client = await pool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(
+          `UPDATE student_auth
+           SET password_hash = $1, updated_at = NOW()
+           WHERE reg_no = $2`,
+          [normalizedHash, rowRegNo]
+        );
+        await recordStudentPasswordHistory(client, {
+          regNo: rowRegNo,
+          passwordHash: normalizedHash,
+          source: 'system',
+          changedBy: 'system',
+          note: 'normalized legacy password hash on login',
+        });
+        await client.query('COMMIT');
+      } catch (err) {
+        await client.query('ROLLBACK');
+        throw err;
+      } finally {
+        client.release();
+      }
     }
 
     const token = await createSession({ role: 'student', regNo: rowRegNo, name: row.full_name });
@@ -997,12 +1050,30 @@ app.post('/api/auth/student/password', requireAuth('student'), async (req, res, 
       return res.status(400).json({ error: 'Password must be at least 6 characters' });
     }
 
-    await pool.query(
-      `UPDATE student_auth
-       SET password_hash = $1, password_changed = TRUE, updated_at = NOW()
-       WHERE reg_no = $2`,
-      [hashPassword(newPassword), req.auth.regNo]
-    );
+    const newHash = hashPassword(newPassword);
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `UPDATE student_auth
+         SET password_hash = $1, password_changed = TRUE, updated_at = NOW()
+         WHERE reg_no = $2`,
+        [newHash, req.auth.regNo]
+      );
+      await recordStudentPasswordHistory(client, {
+        regNo: req.auth.regNo,
+        passwordHash: newHash,
+        source: 'student',
+        changedBy: req.auth.regNo,
+        note: 'student password change',
+      });
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
 
     res.json({ ok: true });
   } catch (err) {
@@ -1077,6 +1148,54 @@ app.get('/admin/students', requireSuperAdmin, async (_req, res, next) => {
        ORDER BY reg_no ASC`
     );
     res.json({ students: result.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.delete('/admin/students/:regNo', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const regNo = normalizeRegNo(req.params.regNo);
+    if (!regNo) {
+      return res.status(400).json({ error: 'Invalid regNo' });
+    }
+
+    const studentResult = await pool.query(
+      `SELECT reg_no, full_name, stream, section, created_at
+       FROM students
+       WHERE reg_no = $1
+       LIMIT 1`,
+      [regNo]
+    );
+    if (!studentResult.rows.length) {
+      return res.status(404).json({ error: 'Student not found' });
+    }
+
+    const student = studentResult.rows[0];
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM submissions WHERE roll_number = $1', [regNo]);
+      await client.query('UPDATE broadcast_messages SET target_reg_no = NULL, updated_at = NOW() WHERE target_reg_no = $1', [regNo]);
+      await client.query('DELETE FROM students WHERE reg_no = $1', [regNo]);
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    await writeAuditLog({
+      actor: req.auth?.email || 'superadmin',
+      action: 'student.delete',
+      targetType: 'student',
+      targetId: regNo,
+      beforeJson: student,
+      afterJson: { deleted: true },
+    });
+
+    res.json({ ok: true, student });
   } catch (err) {
     next(err);
   }
@@ -1176,6 +1295,140 @@ app.get('/superadmin/audit-logs', requireSuperAdmin, async (req, res, next) => {
     }
 
     res.json({ logs: result.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.get('/superadmin/student-passwords', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const q = String(req.query?.q || '').trim().toLowerCase();
+    const params = [];
+    const where = ['1=1'];
+    if (q) {
+      params.push(`%${q}%`);
+      where.push(`(
+        LOWER(BTRIM(s.reg_no)) LIKE $${params.length}
+        OR LOWER(COALESCE(s.full_name, '')) LIKE $${params.length}
+        OR LOWER(COALESCE(s.stream, '')) LIKE $${params.length}
+        OR LOWER(COALESCE(s.section, '')) LIKE $${params.length}
+      )`);
+    }
+
+    const result = await pool.query(
+      `SELECT
+         BTRIM(s.reg_no) AS reg_no,
+         s.full_name,
+         COALESCE(s.stream, '') AS stream,
+         COALESCE(s.section, '') AS section,
+         COALESCE(a.password_changed, FALSE) AS password_changed,
+         a.updated_at AS auth_updated_at,
+         h.last_changed_at,
+         h.last_changed_by,
+         h.last_source,
+         COALESCE(h.history_count, 0)::int AS history_count
+       FROM students s
+       LEFT JOIN student_auth a ON a.reg_no = s.reg_no
+       LEFT JOIN LATERAL (
+         SELECT p.created_at AS last_changed_at,
+                p.changed_by AS last_changed_by,
+                p.source AS last_source,
+                (SELECT COUNT(*)::int FROM student_password_history px WHERE px.reg_no = s.reg_no) AS history_count
+         FROM student_password_history p
+         WHERE p.reg_no = s.reg_no
+         ORDER BY p.created_at DESC, p.id DESC
+         LIMIT 1
+       ) h ON TRUE
+       WHERE ${where.join(' AND ')}
+       ORDER BY s.reg_no ASC`,
+      params
+    );
+
+    const summary = result.rows.reduce((acc, row) => {
+      acc.total += 1;
+      if (row.password_changed) acc.changed += 1;
+      else acc.default += 1;
+      if (row.last_source === 'student') acc.studentChanges += 1;
+      if (row.last_source === 'superadmin') acc.adminResets += 1;
+      return acc;
+    }, { total: 0, changed: 0, default: 0, studentChanges: 0, adminResets: 0 });
+
+    res.json({ students: result.rows, summary });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/superadmin/student-passwords/:regNo/reset', requireSuperAdmin, async (req, res, next) => {
+  try {
+    const requestedRegNo = normalizeRegNo(req.params.regNo);
+    const newPassword = String(req.body?.password || '').trim();
+    if (!requestedRegNo || newPassword.length < 6) {
+      return res.status(400).json({ error: 'Valid register number and password are required' });
+    }
+
+    const newHash = hashPassword(newPassword);
+    const client = await pool.connect();
+    let canonicalRegNo = requestedRegNo;
+    try {
+      await client.query('BEGIN');
+
+      const studentMatch = await client.query(
+        `SELECT BTRIM(reg_no) AS reg_no
+         FROM students
+         WHERE UPPER(BTRIM(reg_no)) = UPPER(BTRIM($1))
+         ORDER BY CASE WHEN UPPER(BTRIM(reg_no)) = UPPER($1) THEN 0 ELSE 1 END, created_at DESC
+         LIMIT 1`,
+        [requestedRegNo]
+      );
+      if (!studentMatch.rows.length) {
+        await client.query('ROLLBACK');
+        return res.status(404).json({ error: 'Student not found' });
+      }
+      canonicalRegNo = String(studentMatch.rows[0].reg_no || '').trim();
+
+      await client.query(
+        `UPDATE student_auth
+         SET password_hash = $1,
+             password_changed = TRUE,
+             updated_at = NOW()
+         WHERE UPPER(BTRIM(reg_no)) = UPPER(BTRIM($2))`,
+        [newHash, canonicalRegNo]
+      );
+
+      await client.query(
+        `INSERT INTO student_auth (reg_no, password_hash, password_changed, updated_at)
+         VALUES ($1, $2, TRUE, NOW())
+         ON CONFLICT (reg_no) DO UPDATE
+           SET password_hash = EXCLUDED.password_hash,
+               password_changed = TRUE,
+               updated_at = NOW()`,
+        [canonicalRegNo, newHash]
+      );
+      await recordStudentPasswordHistory(client, {
+        regNo: canonicalRegNo,
+        passwordHash: newHash,
+        source: 'superadmin',
+        changedBy: req.auth?.email || 'superadmin',
+        note: 'password reset from superadmin',
+      });
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+
+    await writeAuditLog({
+      actor: req.auth?.email || 'superadmin',
+      action: 'student.password_reset',
+      targetType: 'student',
+      targetId: canonicalRegNo,
+      afterJson: { regNo: canonicalRegNo, changedBy: req.auth?.email || 'superadmin' },
+    });
+
+    res.json({ ok: true, regNo: canonicalRegNo });
   } catch (err) {
     next(err);
   }
@@ -1802,6 +2055,31 @@ app.get('/student/subjects', requireAuth('student'), async (req, res, next) => {
   }
 });
 
+app.get('/student/profile', requireAuth('student'), async (req, res, next) => {
+  try {
+    const regNo = normalizeRegNo(req.auth.regNo);
+    const result = await pool.query(
+      `SELECT BTRIM(reg_no) AS reg_no,
+              full_name,
+              COALESCE(stream, '') AS stream,
+              COALESCE(section, '') AS section
+       FROM students
+       WHERE UPPER(BTRIM(reg_no)) = UPPER(BTRIM($1))
+       ORDER BY CASE WHEN BTRIM(reg_no) = BTRIM($1) THEN 0 ELSE 1 END, created_at DESC
+       LIMIT 1`,
+      [regNo]
+    );
+
+    if (!result.rows.length) {
+      return res.status(404).json({ error: 'Student profile not found' });
+    }
+
+    res.json({ student: result.rows[0] });
+  } catch (err) {
+    next(err);
+  }
+});
+
 app.get('/student/staff', requireAuth('student'), async (req, res, next) => {
   try {
     const regNo = normalizeRegNo(req.auth.regNo);
@@ -1874,6 +2152,216 @@ app.get('/staff/students', requireAuth('staff'), async (req, res, next) => {
       );
     }
     res.json({ students: result.rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+function normalizeManualAssessmentKey(value) {
+  const raw = String(value || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+  if (raw === 'AL1') return 'AL1';
+  if (raw === 'AL2') return 'AL2';
+  if (raw === 'SSA1') return 'SSA1';
+  if (raw === 'SSA2' || raw === 'SSA') return 'SSA2';
+  return null;
+}
+
+function clampManualMark(value) {
+  if (value === null || value === undefined || value === '') return null;
+  const num = Number(value);
+  if (!Number.isFinite(num)) return null;
+  if (num < 0) return 0;
+  if (num > 20) return 20;
+  return Math.round(num * 100) / 100;
+}
+
+app.get('/staff/uhv-marks-entry', requireAuth('staff'), async (req, res, next) => {
+  try {
+    const subjectId = Number(req.query?.subjectId);
+    const email = normalizeStaffEmail(req.auth.email);
+    if (!Number.isFinite(subjectId) || subjectId <= 0) {
+      return res.status(400).json({ error: 'subjectId is required' });
+    }
+
+    const isSA = isSuperAdminSession(req.auth);
+    if (!isSA) {
+      const canAccessSubject = await ensureStaffAssignedToSubject(email, subjectId);
+      if (!canAccessSubject) return res.status(403).json({ error: 'Forbidden' });
+    }
+
+    let studentsResult;
+    if (isSA) {
+      studentsResult = await pool.query(
+        `SELECT s.reg_no, s.full_name, s.stream, s.section
+         FROM students s
+         JOIN student_subject_assignments ssa ON ssa.reg_no = s.reg_no
+         WHERE ssa.subject_id = $1 AND ssa.is_active = TRUE
+         ORDER BY s.reg_no ASC`,
+        [subjectId]
+      );
+    } else {
+      studentsResult = await pool.query(
+        `SELECT s.reg_no, s.full_name, s.stream, s.section
+         FROM student_staff_subject_assignments a
+         JOIN students s ON s.reg_no = a.reg_no
+         WHERE a.staff_email = $1
+           AND a.subject_id = $2
+           AND a.is_active = TRUE
+         ORDER BY s.reg_no ASC`,
+        [email, subjectId]
+      );
+    }
+
+    const regNos = studentsResult.rows.map((r) => String(r.reg_no || '').trim()).filter(Boolean);
+    if (!regNos.length) return res.json({ rows: [] });
+
+    const marksResult = await pool.query(
+      `SELECT roll_number, test_title, marks, total_marks, submitted_at
+       FROM submissions
+       WHERE subject_id = $1
+         AND roll_number = ANY($2::text[])
+         AND archived = FALSE
+       ORDER BY roll_number ASC, submitted_at DESC`,
+      [subjectId, regNos]
+    );
+
+    const marksMap = new Map();
+    for (const row of marksResult.rows) {
+      const regNo = String(row.roll_number || '').trim();
+      if (!regNo) continue;
+      const key = normalizeManualAssessmentKey(row.test_title);
+      if (!key) continue;
+      const mapKey = `${regNo}::${key}`;
+      if (marksMap.has(mapKey)) continue;
+      const rawMarks = row.marks === null || row.marks === undefined ? null : Number(row.marks);
+      const rawTotal = row.total_marks === null || row.total_marks === undefined ? null : Number(row.total_marks);
+      if (rawMarks === null || !Number.isFinite(rawMarks)) {
+        marksMap.set(mapKey, null);
+        continue;
+      }
+      if (rawTotal && Number.isFinite(rawTotal) && rawTotal > 0 && rawTotal !== 20) {
+        marksMap.set(mapKey, Math.round(((rawMarks / rawTotal) * 20) * 100) / 100);
+      } else {
+        marksMap.set(mapKey, Math.round(rawMarks * 100) / 100);
+      }
+    }
+
+    const rows = studentsResult.rows.map((s) => {
+      const regNo = String(s.reg_no || '').trim();
+      return {
+        regNo,
+        studentName: s.full_name || '',
+        stream: s.stream || '',
+        section: s.section || '',
+        al1: marksMap.get(`${regNo}::AL1`) ?? null,
+        al2: marksMap.get(`${regNo}::AL2`) ?? null,
+        ssa1: marksMap.get(`${regNo}::SSA1`) ?? null,
+        ssa2: marksMap.get(`${regNo}::SSA2`) ?? null,
+      };
+    });
+
+    res.json({ rows });
+  } catch (err) {
+    next(err);
+  }
+});
+
+app.post('/staff/uhv-marks-entry', requireAuth('staff'), async (req, res, next) => {
+  try {
+    const subjectId = Number(req.body?.subjectId);
+    const regNo = normalizeRegNo(req.body?.regNo);
+    const email = normalizeStaffEmail(req.auth.email);
+    if (!Number.isFinite(subjectId) || subjectId <= 0 || !regNo) {
+      return res.status(400).json({ error: 'subjectId and regNo are required' });
+    }
+
+    const isSA = isSuperAdminSession(req.auth);
+    if (!isSA) {
+      const canAccessSubject = await ensureStaffAssignedToSubject(email, subjectId);
+      if (!canAccessSubject) return res.status(403).json({ error: 'Forbidden' });
+
+      const canAccessStudent = await pool.query(
+        `SELECT 1
+         FROM student_staff_subject_assignments
+         WHERE reg_no = $1 AND staff_email = $2 AND subject_id = $3 AND is_active = TRUE
+         LIMIT 1`,
+        [regNo, email, subjectId]
+      );
+      if (!canAccessStudent.rows.length) {
+        return res.status(403).json({ error: 'Student is not assigned to this staff for the subject' });
+      }
+    }
+
+    const studentRes = await pool.query(
+      `SELECT full_name, stream, section FROM students WHERE reg_no = $1 LIMIT 1`,
+      [regNo]
+    );
+    if (!studentRes.rows.length) return res.status(404).json({ error: 'Student not found' });
+
+    const subjectRes = await pool.query(`SELECT code, name FROM subjects WHERE id = $1 LIMIT 1`, [subjectId]);
+    if (!subjectRes.rows.length) return res.status(404).json({ error: 'Subject not found' });
+
+    const student = studentRes.rows[0];
+    const subject = subjectRes.rows[0];
+    const classroom = String(student.section || '').trim();
+    const subjectLabel = String(subject.code || subject.name || '').trim();
+
+    const valuesByKey = {
+      AL1: clampManualMark(req.body?.al1),
+      AL2: clampManualMark(req.body?.al2),
+      SSA1: clampManualMark(req.body?.ssa1),
+      SSA2: clampManualMark(req.body?.ssa2),
+    };
+
+    for (const [assessmentKey, marks] of Object.entries(valuesByKey)) {
+      const submissionId = `manual-${subjectId}-${regNo}-${assessmentKey.toLowerCase()}`;
+      const status = marks === null ? 'pending' : 'graded';
+      const totalMarks = marks === null ? null : 20;
+      const gradedAt = marks === null ? null : new Date();
+
+      await pool.query(
+        `INSERT INTO submissions (
+          id, student_name, roll_number, subject_id, subject, classroom, test_title,
+          notes, images, file_count, status, marks, total_marks, feedback, archived,
+          submitted_at, graded_at
+        ) VALUES (
+          $1, $2, $3, $4, $5, $6, $7,
+          '', '[]'::jsonb, 0, $8, $9, $10, COALESCE($11, ''), FALSE,
+          NOW(), $12
+        )
+        ON CONFLICT (id)
+        DO UPDATE SET
+          student_name = EXCLUDED.student_name,
+          roll_number = EXCLUDED.roll_number,
+          subject_id = EXCLUDED.subject_id,
+          subject = EXCLUDED.subject,
+          classroom = EXCLUDED.classroom,
+          test_title = EXCLUDED.test_title,
+          status = EXCLUDED.status,
+          marks = EXCLUDED.marks,
+          total_marks = EXCLUDED.total_marks,
+          feedback = EXCLUDED.feedback,
+          graded_at = EXCLUDED.graded_at,
+          archived = FALSE,
+          updated_at = NOW()`,
+        [
+          submissionId,
+          String(student.full_name || '').trim(),
+          regNo,
+          subjectId,
+          subjectLabel,
+          classroom,
+          assessmentKey,
+          status,
+          marks,
+          totalMarks,
+          'Manual marks entry',
+          gradedAt,
+        ]
+      );
+    }
+
+    res.json({ ok: true });
   } catch (err) {
     next(err);
   }
@@ -2640,10 +3128,11 @@ app.post('/superadmin/database/restore', requireSuperAdmin, async (req, res, nex
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query('TRUNCATE TABLE qa_messages, qa_threads, student_message_reads, student_staff_subject_assignments, student_subject_assignments, staff_subject_assignments, submissions, official_materials, broadcast_messages, student_storage_quotas, student_auth, students, subjects RESTART IDENTITY CASCADE');
+      await client.query('TRUNCATE TABLE qa_messages, qa_threads, student_message_reads, student_staff_subject_assignments, student_subject_assignments, staff_subject_assignments, submissions, official_materials, broadcast_messages, student_storage_quotas, student_password_history, student_auth, students, subjects RESTART IDENTITY CASCADE');
       await restoreTableRows(client, 'subjects', tables.subjects || []);
       await restoreTableRows(client, 'students', tables.students || []);
       await restoreTableRows(client, 'student_auth', tables.student_auth || []);
+      await restoreTableRows(client, 'student_password_history', tables.student_password_history || []);
       await restoreTableRows(client, 'staff_subject_assignments', tables.staff_subject_assignments || []);
       await restoreTableRows(client, 'student_subject_assignments', tables.student_subject_assignments || []);
       await restoreTableRows(client, 'student_staff_subject_assignments', tables.student_staff_subject_assignments || []);
@@ -2675,7 +3164,7 @@ app.post('/superadmin/database/wipe', requireSuperAdmin, async (req, res, next) 
       return res.status(400).json({ error: 'Invalid confirmation phrase' });
     }
 
-    await pool.query('TRUNCATE TABLE qa_messages, qa_threads, student_message_reads, student_staff_subject_assignments, student_subject_assignments, staff_subject_assignments, submissions, official_materials, broadcast_messages, student_storage_quotas, student_auth, students, subjects RESTART IDENTITY CASCADE');
+    await pool.query('TRUNCATE TABLE qa_messages, qa_threads, student_message_reads, student_staff_subject_assignments, student_subject_assignments, staff_subject_assignments, submissions, official_materials, broadcast_messages, student_storage_quotas, student_password_history, student_auth, students, subjects RESTART IDENTITY CASCADE');
     await ensureDefaultSubject();
     await syncStudentsOnApiStartup();
     await backfillMissingStudentAuth();
@@ -2777,6 +3266,88 @@ function parseStudentsFromWorkbook(buffer) {
   }
 
   return students;
+}
+
+function parseManualStudentsInput(rawInput) {
+  const raw = String(rawInput || '').trim();
+  if (!raw) return [];
+
+  const students = [];
+  const lines = raw.split(/\r?\n/);
+
+  for (const lineRaw of lines) {
+    const line = String(lineRaw || '').trim();
+    if (!line || line.startsWith('#')) continue;
+
+    let parts = [];
+    if (line.includes('|')) {
+      parts = line.split('|').map((part) => String(part).trim());
+    } else if (line.includes('\t')) {
+      parts = line.split('\t').map((part) => String(part).trim());
+    } else if (line.includes(',')) {
+      const pieces = line.split(',').map((part) => String(part).trim()).filter(Boolean);
+      if (pieces.length >= 4) {
+        parts = [pieces[0], pieces.slice(1, pieces.length - 2).join(', '), pieces[pieces.length - 2], pieces[pieces.length - 1]];
+      } else if (pieces.length === 3) {
+        parts = [pieces[0], pieces[1], '', pieces[2]];
+      } else {
+        parts = pieces;
+      }
+    } else {
+      parts = line.split(/\s{2,}/).map((part) => String(part).trim());
+    }
+
+    const regNo = String(parts[0] || '').trim().toUpperCase();
+    const fullName = String(parts[1] || '').trim();
+    const stream = String(parts[2] || '').trim();
+    const section = String(parts[3] || '').trim().toUpperCase();
+
+    if (!regNo || !fullName) continue;
+    students.push({ regNo, fullName, stream, section });
+  }
+
+  return students;
+}
+
+function parseCombinedStreamSection(rawValue) {
+  const raw = String(rawValue || '').trim();
+  if (!raw) return { stream: '', section: '' };
+
+  // Accept values like "AID-A" or "AID A" as stream + section.
+  const match = raw.match(/^(.+?)[\s-]+([A-Za-z0-9]+)$/);
+  if (!match) {
+    return { stream: raw.toUpperCase(), section: '' };
+  }
+
+  const stream = String(match[1] || '').trim().toUpperCase();
+  const section = String(match[2] || '').trim().toUpperCase();
+  if (!stream || !section) {
+    return { stream: raw.toUpperCase(), section: '' };
+  }
+
+  return { stream, section };
+}
+
+function normalizeImportRowStreamSection(row, fallbackStream, fallbackSection) {
+  const rawStream = String(row?.stream || '').trim();
+  const rawSection = String(row?.section || '').trim();
+
+  const parsedStream = parseCombinedStreamSection(rawStream);
+  const parsedSectionCombined = parseCombinedStreamSection(rawSection);
+
+  const hasCombinedSection = /[\s-]+/.test(rawSection);
+
+  const stream =
+    parsedStream.stream ||
+    (hasCombinedSection ? parsedSectionCombined.stream : '') ||
+    String(fallbackStream || '').trim().toUpperCase();
+
+  const section =
+    (hasCombinedSection ? parsedSectionCombined.section : String(rawSection || '').trim().toUpperCase()) ||
+    parsedStream.section ||
+    String(fallbackSection || '').trim().toUpperCase();
+
+  return { stream, section };
 }
 
 function buildStudentImportTemplateBuffer() {
@@ -3123,27 +3694,31 @@ app.get('/admin/students/template', requireSuperAdmin, async (_req, res, next) =
 
 app.post('/admin/students/import', requireSuperAdmin, excelUpload.single('file'), async (req, res, next) => {
   try {
-    if (!req.file || !req.file.buffer) {
-      return res.status(400).json({ error: 'Excel file is required' });
+    const parsedFallback = parseCombinedStreamSection(req.body?.stream || '');
+    const fallbackStream = parsedFallback.stream;
+    const fallbackSection = String(req.body?.section || parsedFallback.section || '').trim().toUpperCase();
+    if (!fallbackSection) {
+      return res.status(400).json({ error: 'Target Section is required' });
     }
-
-    const fallbackStream = String(req.body?.stream || '').trim();
-    if (!fallbackStream) {
-      return res.status(400).json({ error: 'Target Department is required' });
-    }
-    const fallbackSection = String(req.body?.section || '').trim().toUpperCase();
     const dryRun = String(req.body?.dryRun || '').toLowerCase() === 'true';
-    const rows = parseStudentsFromWorkbook(req.file.buffer);
+    const fileRows = req.file && req.file.buffer ? parseStudentsFromWorkbook(req.file.buffer) : [];
+    const manualRows = parseManualStudentsInput(req.body?.manualStudents || '');
+    const rows = [...fileRows, ...manualRows];
     if (!rows.length) {
-      return res.status(400).json({ error: 'No valid student rows found in file' });
+      return res.status(400).json({ error: 'No valid student rows found in file or manual entries' });
     }
 
     if (dryRun) {
       const preview = rows.slice(0, 20).map((row) => ({
+        ...(() => {
+          const normalized = normalizeImportRowStreamSection(row, fallbackStream, fallbackSection);
+          return {
+            stream: normalized.stream || null,
+            section: normalized.section || inferSectionFromRegNo(row.regNo) || null,
+          };
+        })(),
         regNo: row.regNo,
         fullName: row.fullName,
-        stream: row.stream || fallbackStream || null,
-        section: row.section || fallbackSection || inferSectionFromRegNo(row.regNo) || null,
       }));
       return res.json({
         ok: true,
@@ -3157,13 +3732,15 @@ app.post('/admin/students/import', requireSuperAdmin, excelUpload.single('file')
     let updated = 0;
     let skipped = 0;
     const streamCount = {};
+    const sectionCount = {};
 
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
       for (const row of rows) {
-        const stream = row.stream || fallbackStream;
-        const section = row.section || fallbackSection || inferSectionFromRegNo(row.regNo);
+        const normalized = normalizeImportRowStreamSection(row, fallbackStream, fallbackSection);
+        const stream = normalized.stream || fallbackStream;
+        const section = normalized.section || inferSectionFromRegNo(row.regNo);
         const upsertStudent = await client.query(
           `INSERT INTO students (reg_no, full_name, stream, section)
            VALUES ($1, $2, $3, $4)
@@ -3194,6 +3771,8 @@ app.post('/admin/students/import', requireSuperAdmin, excelUpload.single('file')
 
         const key = stream || 'Unspecified';
         streamCount[key] = (streamCount[key] || 0) + 1;
+        const secKey = section || 'Unspecified';
+        sectionCount[secKey] = (sectionCount[secKey] || 0) + 1;
       }
       await client.query('COMMIT');
     } catch (err) {
@@ -3210,6 +3789,7 @@ app.post('/admin/students/import', requireSuperAdmin, excelUpload.single('file')
       updated,
       skipped,
       streams: streamCount,
+      sections: sectionCount,
     });
   } catch (err) {
     next(err);
@@ -3805,6 +4385,161 @@ app.get('/reports/graded.xlsx', requireAuth('staff'), async (_req, res, next) =>
   } catch (err) {
     console.error('[REPORT-DOWNLOAD] Error:', err.message || err);
     next(err);
+  }
+});
+
+app.get('/reports/uhv-marks.xlsx', requireAuth('staff'), async (req, res, next) => {
+  try {
+    const subjectId = Number(req.query?.subjectId);
+    if (!Number.isFinite(subjectId) || subjectId <= 0) {
+      return res.status(400).json({ error: 'subjectId is required' });
+    }
+
+    const email = normalizeStaffEmail(req.auth.email);
+    const isSA = isSuperAdminSession(req.auth);
+    if (!isSA) {
+      const canAccessSubject = await ensureStaffAssignedToSubject(email, subjectId);
+      if (!canAccessSubject) {
+        return res.status(403).json({ error: 'Forbidden' });
+      }
+    }
+
+    const subjectResult = await pool.query(
+      `SELECT id, code, name
+       FROM subjects
+       WHERE id = $1 AND is_active = TRUE`,
+      [subjectId]
+    );
+    if (subjectResult.rows.length === 0) {
+      return res.status(404).json({ error: 'Subject not found' });
+    }
+    const subject = subjectResult.rows[0];
+
+    let studentsResult;
+    if (isSA) {
+      studentsResult = await pool.query(
+        `SELECT s.reg_no, s.full_name, COALESCE(NULLIF(TRIM(s.section), ''), 'Unspecified Section') AS section
+         FROM students s
+         JOIN student_subject_assignments ssa ON ssa.reg_no = s.reg_no
+         WHERE ssa.subject_id = $1 AND ssa.is_active = TRUE
+         ORDER BY s.reg_no ASC`,
+        [subjectId]
+      );
+    } else {
+      studentsResult = await pool.query(
+        `SELECT s.reg_no, s.full_name, COALESCE(NULLIF(TRIM(s.section), ''), 'Unspecified Section') AS section
+         FROM student_staff_subject_assignments a
+         JOIN students s ON s.reg_no = a.reg_no
+         WHERE a.staff_email = $1
+           AND a.subject_id = $2
+           AND a.is_active = TRUE
+         ORDER BY s.reg_no ASC`,
+        [email, subjectId]
+      );
+    }
+
+    const submissionsResult = await pool.query(
+      `SELECT roll_number,
+              test_title,
+              marks,
+              total_marks,
+              status,
+              COALESCE(graded_at, submitted_at) AS sort_at
+       FROM submissions
+       WHERE subject_id = $1
+         AND archived = FALSE
+       ORDER BY roll_number ASC, COALESCE(graded_at, submitted_at) DESC`,
+      [subjectId]
+    );
+
+    const normalizeAssessmentKey = (title) => {
+      const normalized = String(title || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+      if (normalized.startsWith('AL1') || normalized.startsWith('AL01')) return 'AL1';
+      if (normalized.startsWith('AL2') || normalized.startsWith('AL02')) return 'AL2';
+      if (normalized.startsWith('SSA1') || normalized.startsWith('SSA01')) return 'SSA1';
+      if (normalized === 'SSA' || normalized.startsWith('SSA2') || normalized.startsWith('SSA02')) return 'SSA2';
+      return '';
+    };
+
+    const toOutOf20 = (marks, total) => {
+      const m = Number(marks);
+      const t = Number(total);
+      if (!Number.isFinite(m) || !Number.isFinite(t) || t <= 0) return '';
+      const converted = (m / t) * 20;
+      return Number(converted.toFixed(2));
+    };
+
+    const marksByStudent = new Map();
+    for (const row of submissionsResult.rows) {
+      if (String(row.status || '').toLowerCase() !== 'graded') continue;
+      const regNo = String(row.roll_number || '').trim();
+      if (!regNo) continue;
+      const assessmentKey = normalizeAssessmentKey(row.test_title);
+      if (!assessmentKey) continue;
+
+      if (!marksByStudent.has(regNo)) {
+        marksByStudent.set(regNo, { AL1: '', AL2: '', SSA1: '', SSA2: '' });
+      }
+      const bucket = marksByStudent.get(regNo);
+      if (bucket[assessmentKey] === '') {
+        bucket[assessmentKey] = toOutOf20(row.marks, row.total_marks);
+      }
+    }
+
+    const workbook = new ExcelJS.Workbook();
+    const worksheet = workbook.addWorksheet('UHV Marks List');
+    worksheet.columns = [
+      { header: 'S.No', key: 'sno', width: 8 },
+      { header: 'Register Number', key: 'regNo', width: 20 },
+      { header: 'Student Name', key: 'name', width: 32 },
+      { header: 'Section', key: 'section', width: 14 },
+      { header: 'AL1 (20)', key: 'al1', width: 12 },
+      { header: 'AL2 (20)', key: 'al2', width: 12 },
+      { header: 'SSA1 (20)', key: 'ssa1', width: 12 },
+      { header: 'SSA2 (20)', key: 'ssa2', width: 12 },
+    ];
+
+    const students = studentsResult.rows || [];
+    students.forEach((student, idx) => {
+      const regNo = String(student.reg_no || '').trim();
+      const marks = marksByStudent.get(regNo) || { AL1: '', AL2: '', SSA1: '', SSA2: '' };
+      worksheet.addRow({
+        sno: idx + 1,
+        regNo,
+        name: String(student.full_name || '').trim(),
+        section: String(student.section || 'Unspecified Section').trim(),
+        al1: marks.AL1,
+        al2: marks.AL2,
+        ssa1: marks.SSA1,
+        ssa2: marks.SSA2,
+      });
+    });
+
+    const headerRow = worksheet.getRow(1);
+    headerRow.font = { bold: true };
+    headerRow.alignment = { vertical: 'middle', horizontal: 'center' };
+    headerRow.fill = {
+      type: 'pattern',
+      pattern: 'solid',
+      fgColor: { argb: 'FFF0F0F0' },
+    };
+
+    for (let i = 2; i <= worksheet.rowCount; i += 1) {
+      worksheet.getCell(`E${i}`).alignment = { horizontal: 'center' };
+      worksheet.getCell(`F${i}`).alignment = { horizontal: 'center' };
+      worksheet.getCell(`G${i}`).alignment = { horizontal: 'center' };
+      worksheet.getCell(`H${i}`).alignment = { horizontal: 'center' };
+    }
+
+    const safeCode = String(subject.code || 'subject').replace(/[^a-zA-Z0-9_-]/g, '-');
+    const fileName = `${safeCode}-uhv-marks-list.xlsx`;
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    const buffer = await workbook.xlsx.writeBuffer();
+    return res.send(Buffer.from(buffer));
+  } catch (err) {
+    return next(err);
   }
 });
 
@@ -4459,6 +5194,20 @@ async function ensureSchema() {
   `);
 
   await pool.query(`
+    CREATE TABLE IF NOT EXISTS student_password_history (
+      id BIGSERIAL PRIMARY KEY,
+      reg_no TEXT NOT NULL REFERENCES students(reg_no) ON DELETE CASCADE,
+      password_hash TEXT NOT NULL,
+      source TEXT NOT NULL,
+      changed_by TEXT,
+      note TEXT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    )
+  `);
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_student_password_history_reg_no ON student_password_history(reg_no)');
+  await pool.query('CREATE INDEX IF NOT EXISTS idx_student_password_history_created_at ON student_password_history(created_at DESC)');
+
+  await pool.query(`
     CREATE TABLE IF NOT EXISTS staff_accounts (
       email TEXT PRIMARY KEY,
       full_name TEXT NOT NULL,
@@ -4949,6 +5698,25 @@ async function backfillMissingStudentAuth() {
   }
 }
 
+async function backfillStudentPasswordHistory() {
+  const result = await pool.query(
+    `INSERT INTO student_password_history (reg_no, password_hash, source, changed_by, note, created_at)
+     SELECT a.reg_no,
+            a.password_hash,
+            CASE WHEN a.password_changed THEN 'existing' ELSE 'default' END,
+            'system',
+            'backfill from current student_auth state',
+            COALESCE(a.updated_at, NOW())
+     FROM student_auth a
+     LEFT JOIN student_password_history h ON h.reg_no = a.reg_no
+     WHERE h.reg_no IS NULL`
+  );
+
+  if (result.rowCount > 0) {
+    console.log(`Backfilled ${result.rowCount} student password history rows`);
+  }
+}
+
 async function enforceDefaultPasswordForFirstLoginAccounts() {
   const result = await pool.query(
     `UPDATE student_auth a
@@ -5046,6 +5814,7 @@ async function bootstrap() {
   await backfillStudentMetadataFromRegNo();
   await backfillMissingStudentAuth();
   await enforceDefaultPasswordForFirstLoginAccounts();
+  await backfillStudentPasswordHistory();
   await upsertDefaultStaffAccount();
   await upsertUHVStaffAccount();
   await upsertDefaultSuperAdminAccount();

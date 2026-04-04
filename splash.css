@@ -63,14 +63,31 @@ body {
     margin: 12px 0 10px;
     font-family: 'Sora', sans-serif;
     font-size: clamp(1.5rem, 7vw, 2.75rem);
-    font-weight: 700;
+    font-weight: 800;
     line-height: 1.08;
-    letter-spacing: 0.04em;
-    background: linear-gradient(100deg, #f8fbff 0%, #7fb8ff 22%, #4fdaf5 48%, #5ff0c1 72%, #ffe38a 100%);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    background: linear-gradient(90deg, #ff4d6d 0%, #ffb703 18%, #7cffcb 38%, #4cc9f0 58%, #8a5cff 78%, #ff4d6d 100%);
+    background-size: 320% 100%;
     -webkit-background-clip: text;
     background-clip: text;
     color: transparent;
-    text-shadow: 0 0 16px rgba(47, 120, 255, 0.18);
+    text-shadow:
+        0 0 10px rgba(76, 201, 240, 0.22),
+        0 0 22px rgba(255, 77, 109, 0.18),
+        0 10px 30px rgba(0, 0, 0, 0.24);
+    filter: drop-shadow(0 0 14px rgba(140, 92, 255, 0.18));
+    animation: brandShimmer 7s linear infinite;
+}
+
+@keyframes brandShimmer {
+    0% {
+        background-position: 0% 50%;
+    }
+
+    100% {
+        background-position: 320% 50%;
+    }
 }
 
 .sub {

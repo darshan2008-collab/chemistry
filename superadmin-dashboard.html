@@ -30,6 +30,16 @@
                 Assignments</button>
             <button type="button" class="admin-menu-btn" data-menu-target="operations" aria-selected="false">Operations
                 & Subjects</button>
+            <button type="button" class="admin-menu-btn" data-menu-target="passwords" aria-selected="false">
+                <span style="display:inline-flex;align-items:center;gap:6px;">
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                        aria-hidden="true">
+                        <rect x="3" y="10" width="18" height="11" rx="2" ry="2"></rect>
+                        <path d="M7 10V7a5 5 0 0 1 10 0v3"></path>
+                    </svg>
+                    Password Management
+                </span>
+            </button>
         </nav>
 
         <!-- STAFF PANEL -->
@@ -66,12 +76,15 @@
                 <section class="card">
                     <h2>Student Batch Import</h2>
                     <form id="importForm" class="form" novalidate>
-                        <label for="stream">Target Department</label>
-                        <input id="stream" type="text" placeholder="e.g. AIDS-A" required />
+                        <label for="stream">Target Department (optional)</label>
+                        <input id="stream" type="text" placeholder="e.g. AID" />
 
-                        <label for="studentFile">Select Student Data (.xlsx, .csv)</label>
+                        <label for="importSection">Target Section (required)</label>
+                        <input id="importSection" type="text" placeholder="e.g. A7 or A3" required />
+
+                        <label for="studentFile">Select Student Data (.xlsx, .csv) or use manual entries below</label>
                         <div class="file-drop-preview">
-                            <input id="studentFile" type="file" accept=".xlsx,.xls,.csv" required />
+                            <input id="studentFile" type="file" accept=".xlsx,.xls,.csv" />
                         </div>
 
                         <div class="btn-group">
@@ -80,6 +93,44 @@
                         </div>
                         <p id="importMsg" class="msg"></p>
                     </form>
+                </section>
+
+                <section class="card">
+                    <h2>Manual Student Entry</h2>
+                    <form id="manualImportForm" class="form" novalidate>
+                        <div class="row">
+                            <div class="col">
+                                <label for="manualRegNo">Register Number (required)</label>
+                                <input id="manualRegNo" type="text" placeholder="e.g. 927625BAD001" required />
+                            </div>
+                            <div class="col">
+                                <label for="manualPassword">Password (required)</label>
+                                <input id="manualPassword" type="password" placeholder="Min 6 characters" required />
+                            </div>
+                        </div>
+
+                        <label for="manualFullName">Student Name (required)</label>
+                        <input id="manualFullName" type="text" placeholder="e.g. Aashiq R" required />
+
+                        <label for="manualStream">Target Department (optional)</label>
+                        <input id="manualStream" type="text" placeholder="e.g. AID" />
+
+                        <label for="manualSection">Target Section (required)</label>
+                        <input id="manualSection" type="text" placeholder="e.g. A7 or A3" required />
+
+                        <div class="btn-group">
+                            <button class="btn action" type="submit">Save Manual Students</button>
+                        </div>
+                        <p id="manualImportMsg" class="msg"></p>
+                    </form>
+                </section>
+
+                <section class="card accounts-list-card" style="grid-column: 1 / -1;">
+                    <div class="head-row">
+                        <h2>Registered Students</h2>
+                        <button class="btn ghost" id="refreshStudentsBtn" type="button">Sync Students</button>
+                    </div>
+                    <div id="studentsList" class="list"></div>
                 </section>
             </div>
 
@@ -110,6 +161,15 @@
             </div>
         </section>
 
+        <!-- PASSWORD MANAGEMENT PANEL -->
+        <section class="menu-panel" data-panel="passwords" id="panel-passwords" hidden>
+            <div id="passwordsMount">
+                <div class="list-item">
+                    <div class="meta">Loading password management...</div>
+                </div>
+            </div>
+        </section>
+
         <section class="footer-actions">
             <button id="logoutBtn" class="logout-btn" type="button">Logout System</button>
         </section>
@@ -117,7 +177,7 @@
 
     <div class="toast" id="toast" role="status" aria-live="polite"></div>
 
-    <script src="superadmin-dashboard.js?v=20260402c"></script>
+    <script src="superadmin-dashboard.js?v=20260404c"></script>
 </body>
 
 </html>
