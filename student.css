@@ -466,6 +466,35 @@ body {
   font-style: italic;
 }
 
+.subjects-inline {
+  width: min(900px, calc(100% - 40px));
+  margin: 0 auto 18px;
+  position: relative;
+  top: 0;
+  height: auto;
+  padding: 20px;
+  border: 1px solid var(--glass-border);
+  border-radius: 22px;
+  background: rgba(5, 5, 12, 0.45);
+  backdrop-filter: blur(24px);
+  overflow: visible;
+  gap: 14px;
+}
+
+.subjects-inline .sidebar-header {
+  padding-left: 4px;
+}
+
+.subjects-inline .sidebar-list {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 10px;
+}
+
+.subjects-inline .sidebar-item {
+  background: rgba(255, 255, 255, 0.02);
+}
+
 /* ── Main Content Flow ─────────────────────────────────────── */
 .main-content-flow {
   flex: 1;
@@ -523,6 +552,16 @@ body {
     padding: 10px 16px;
     white-space: nowrap;
     transform: none !important;
+  }
+
+  .subjects-inline {
+    width: calc(100% - 24px);
+    margin: 0 auto 14px;
+    padding: 16px;
+  }
+
+  .subjects-inline .sidebar-list {
+    grid-template-columns: 1fr;
   }
 }
 
@@ -664,6 +703,78 @@ body {
   background-color: var(--bg2);
   color: var(--text);
   font-family: 'Inter', sans-serif;
+}
+
+#subjectSelect {
+  background: #ffffff !important;
+  color: #111827 !important;
+  border-color: #93c5fd !important;
+}
+
+#subjectSelect:focus {
+  background: #ffffff !important;
+  border-color: #2563eb !important;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.2) !important;
+}
+
+#subjectSelect option {
+  background: #ffffff !important;
+  color: #111827 !important;
+}
+
+#subjectSelect option:disabled {
+  color: #6b7280 !important;
+}
+
+#studentPptSubject {
+  background: #ffffff !important;
+  color: #111827 !important;
+  border-color: #cbd5e1 !important;
+}
+
+#studentPptSubject option {
+  background: #ffffff !important;
+  color: #111827 !important;
+}
+
+#studentPptSubject option:disabled {
+  color: #6b7280 !important;
+}
+
+#studentNotesFileInput,
+#studentPptFile {
+  border: 1px solid rgba(129, 140, 248, 0.55) !important;
+  background: linear-gradient(135deg, rgba(15, 23, 42, 0.82), rgba(49, 46, 129, 0.55)) !important;
+  color: #e5e7eb !important;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 8px 18px rgba(2, 6, 23, 0.38);
+  cursor: pointer;
+}
+
+#studentNotesFileInput::file-selector-button,
+#studentPptFile::file-selector-button {
+  margin-right: 12px;
+  border: 1px solid rgba(125, 211, 252, 0.45);
+  border-radius: 10px;
+  padding: 7px 13px;
+  font-weight: 700;
+  color: #eff6ff;
+  background: linear-gradient(135deg, #2563eb, #0891b2);
+  cursor: pointer;
+  transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
+}
+
+#studentNotesFileInput:hover::file-selector-button,
+#studentPptFile:hover::file-selector-button {
+  transform: translateY(-1px);
+  box-shadow: 0 8px 16px rgba(30, 64, 175, 0.35);
+  filter: brightness(1.08);
+}
+
+#studentNotesFileInput:focus,
+#studentPptFile:focus {
+  outline: none;
+  border-color: rgba(129, 140, 248, 0.95) !important;
+  box-shadow: 0 0 0 3px rgba(129, 140, 248, 0.24), 0 12px 24px rgba(2, 6, 23, 0.48);
 }
 
 .input-wrap input:focus,

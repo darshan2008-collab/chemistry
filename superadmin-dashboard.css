@@ -48,6 +48,11 @@ body {
 
 .shell {
     position: relative;
+    z-index: 1;
+    max-width: 1180px;
+    margin: 0 auto;
+    display: grid;
+    gap: 14px;
 }
 
 .page-shortcut-btn {
@@ -73,13 +78,6 @@ body {
 
 .page-shortcut-btn svg {
     opacity: 0.8;
-}
-
-z-index: 1;
-max-width: 1180px;
-margin: 0 auto;
-display: grid;
-gap: 14px;
 }
 
 .top {
@@ -229,6 +227,38 @@ gap: 14px;
     padding: 12px;
     background: rgba(255, 255, 255, 0.02);
     margin-bottom: 12px;
+}
+
+#studentFile {
+    border: 1px solid rgba(119, 176, 255, 0.55) !important;
+    background: linear-gradient(135deg, rgba(10, 16, 26, 0.88), rgba(23, 37, 84, 0.56)) !important;
+    color: #e6edf8 !important;
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.07), 0 10px 20px rgba(4, 8, 16, 0.4);
+    cursor: pointer;
+}
+
+#studentFile::file-selector-button {
+    margin-right: 12px;
+    border: 1px solid rgba(61, 217, 184, 0.55);
+    border-radius: 9px;
+    padding: 7px 12px;
+    font-weight: 800;
+    color: #ecfeff;
+    background: linear-gradient(135deg, #0f766e, #2563eb);
+    cursor: pointer;
+    transition: transform 0.2s ease, box-shadow 0.2s ease, filter 0.2s ease;
+}
+
+#studentFile:hover::file-selector-button {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 16px rgba(37, 99, 235, 0.35);
+    filter: brightness(1.08);
+}
+
+#studentFile:focus {
+    outline: none;
+    border-color: rgba(61, 217, 184, 0.9) !important;
+    box-shadow: 0 0 0 3px rgba(61, 217, 184, 0.22), 0 12px 24px rgba(4, 8, 16, 0.5);
 }
 
 .btn-group {

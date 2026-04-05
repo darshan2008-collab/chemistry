@@ -476,7 +476,7 @@ function initStudentCommsPanel() {
           </div>
           <div class="result-subtitle">${escapeHtml(m.file_name || '')}</div>
           <div class="result-actions" style="margin-top:8px;">
-            <a class="result-edit-btn" href="/api/materials/${encodeURIComponent(m.id)}/file" target="_blank" rel="noopener">Open Material</a>
+            <button type="button" class="result-edit-btn" data-open-material-id="${escapeHtml(String(m.id || ''))}">Open Material</button>
           </div>
         </div>
       `).join('');
@@ -579,6 +579,40 @@ function initStudentCommsPanel() {
   });
 
   panel.addEventListener('click', async (e) => {
+    const openMaterialBtn = e.target.closest('[data-open-material-id]');
+    if (openMaterialBtn) {
+      const id = String(openMaterialBtn.getAttribute('data-open-material-id') || '').trim();
+      if (!id) return;
+
+      const popup = window.open('', '_blank', 'noopener');
+      if (popup) {
+        popup.document.title = 'Opening material...';
+        popup.document.body.textContent = 'Loading material...';
+      }
+
+      try {
+        const token = getStudentAuthTokenOrThrow();
+        const res = await fetch(`/api/materials/${encodeURIComponent(id)}/file`, {
+          headers: { Authorization: `Bearer ${token}` },
+          cache: 'no-store',
+        });
+        if (!res.ok) {
+          const payload = await res.json().catch(() => ({}));
+          throw new Error(payload?.error || `Request failed (${res.status})`);
+        }
+
+        const blob = await res.blob();
+        const blobUrl = URL.createObjectURL(blob);
+        if (popup) popup.location.replace(blobUrl);
+        else window.open(blobUrl, '_blank', 'noopener');
+        setTimeout(() => URL.revokeObjectURL(blobUrl), 60000);
+      } catch (err) {
+        if (popup) popup.close();
+        showToast(err.message || 'Failed to open material', 'error');
+      }
+      return;
+    }
+
     const markReadBtn = e.target.closest('[data-mark-read]');
     if (markReadBtn) {
       const id = markReadBtn.getAttribute('data-mark-read');
