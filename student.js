@@ -186,29 +186,57 @@ async function loadSubjectDropdown() {
   const sidebarList = document.getElementById('subjectSidebarList');
   if (!select || !sidebarList) return;
 
+  const getPreferredStaffDisplay = (code, name, currentStaffNames) => {
+    const codeUpper = String(code || '').trim().toUpperCase();
+    const nameUpper = String(name || '').trim().toUpperCase();
+    if (codeUpper.includes('CHEM') || nameUpper.includes('CHEMISTRY')) return 'DR.SHREEKESAVAN';
+    if (codeUpper.includes('UHV') || nameUpper.includes('UNIVERSAL HUMAN VALUES')) return 'MR.VIJAYAKUMAR';
+    return String(currentStaffNames || '').trim();
+  };
+
   try {
     const { subjects } = await studentApiJson('/api/student/subjects');
+    const sourceSubjects = subjects || [];
+    const visibleSubjects = (await Promise.all(sourceSubjects.map(async (subject) => {
+      const subjectId = Number(subject.id || 0);
+      if (!subjectId) return null;
+      try {
+        const staffResult = await studentApiJson(`/api/student/staff?subjectId=${subjectId}`);
+        const staff = staffResult.staff || [];
+        if (!staff.length) return null;
+        const staffNames = staff
+          .map(s => String(s.full_name || s.email || '').trim())
+          .filter(Boolean)
+          .join(', ');
+        return { ...subject, staff_names: staffNames };
+      } catch (_err) {
+        return null;
+      }
+    }))).filter(Boolean);
 
     // Clear existing
     select.innerHTML = '<option value="" disabled selected>Select subject</option>';
     sidebarList.innerHTML = '';
 
-    if (!subjects || subjects.length === 0) {
+    if (!visibleSubjects.length) {
       select.innerHTML = '<option value="" disabled selected>No subjects available</option>';
       sidebarList.innerHTML = '<div class="sidebar-loading">No subjects assigned yet</div>';
       return;
     }
 
-    subjects.forEach(s => {
+    visibleSubjects.forEach(s => {
       const id = String(s.id);
       const code = String(s.code || '').trim();
       const name = String(s.name || '');
+      const staffNames = getPreferredStaffDisplay(code, name, s.staff_names);
+      const subjectLabel = code && name ? `${code} - ${name}` : (code || name || 'Subject');
+      const staffLabel = staffNames ? `Staff: ${staffNames}` : 'Staff not assigned';
 
       // 1. Populate Dropdown
       const opt = document.createElement('option');
       opt.value = id;
       opt.dataset.name = name;
-      opt.textContent = name || 'Subject';
+      opt.textContent = staffNames ? `${subjectLabel} · ${staffLabel}` : subjectLabel;
       select.appendChild(opt);
 
       // 2. Populate Sidebar
@@ -226,13 +254,18 @@ async function loadSubjectDropdown() {
 
       const codeDiv = document.createElement('div');
       codeDiv.style.cssText = 'font-size:0.85rem; font-weight:800; color:var(--text);';
-      codeDiv.textContent = code || 'Subject';
+      codeDiv.textContent = subjectLabel;
       infoDiv.appendChild(codeDiv);
 
       const nameDiv = document.createElement('div');
       nameDiv.style.cssText = 'font-size:0.75rem; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:180px;';
       nameDiv.textContent = name;
       infoDiv.appendChild(nameDiv);
+
+      const staffDiv = document.createElement('div');
+      staffDiv.style.cssText = 'font-size:0.72rem; color:var(--accent-2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:180px; margin-top:2px;';
+      staffDiv.textContent = staffLabel;
+      infoDiv.appendChild(staffDiv);
 
       sideItem.appendChild(infoDiv);
       sideItem.addEventListener('click', () => selectSubject(id));
@@ -527,9 +560,13 @@ function initStudentCommsPanel() {
 
       subjectSelect.innerHTML = subjects.map((s) => {
         const id = String(s.id || '');
-        const label = `${String(s.code || '').trim()} - ${String(s.name || '').trim()}`.trim();
+        const code = String(s.code || '').trim();
+        const name = String(s.name || '').trim();
+        const staffNames = String(s.staff_names || '').trim();
+        const label = code && name ? `${code} - ${name}` : (code || name || 'Subject');
+        const displayLabel = staffNames ? `${label} · Staff: ${staffNames}` : label;
         subjectLabelById.set(id, label);
-        return `<option value="${escapeHtml(id)}">${escapeHtml(label)}</option>`;
+        return `<option value="${escapeHtml(id)}">${escapeHtml(displayLabel)}</option>`;
       }).join('');
       await refreshStaffForSelectedSubject();
     } catch (err) {
@@ -856,18 +893,46 @@ function initStudentPptPanel() {
   const titleInput = panel.querySelector('#studentPptTitle');
   const list = panel.querySelector('#studentPptList');
   const msg = panel.querySelector('#studentPptMsg');
+  const allowedSubjectIds = new Set();
 
   async function loadSubjects() {
     subjectSelect.innerHTML = '<option value="">Loading subjects...</option>';
+    allowedSubjectIds.clear();
     try {
       const payload = await studentApiJson('/api/student/subjects');
-      const subjects = payload.subjects || [];
+      const sourceSubjects = payload.subjects || [];
+      const subjects = (await Promise.all(sourceSubjects.map(async (subject) => {
+        const subjectId = Number(subject.id || 0);
+        if (!subjectId) return null;
+        try {
+          const staffPayload = await studentApiJson(`/api/student/staff?subjectId=${encodeURIComponent(subjectId)}`);
+          const staff = staffPayload.staff || [];
+          if (!staff.length) return null;
+          const staffNames = staff
+            .map((s) => String(s.full_name || s.email || '').trim())
+            .filter(Boolean)
+            .join(', ');
+          return { ...subject, staff_names: staffNames };
+        } catch (_err) {
+          return null;
+        }
+      }))).filter(Boolean);
+
       if (!subjects.length) {
         subjectSelect.innerHTML = '<option value="">No assigned subjects</option>';
         return;
       }
       const options = subjects
-        .map((s) => `<option value="${escapeHtml(String(s.id || ''))}">${escapeHtml(String(s.name || '').trim() || 'Subject')}</option>`)
+        .map((s) => {
+          const subjectId = String(s.id || '').trim();
+          if (subjectId) allowedSubjectIds.add(subjectId);
+          const code = String(s.code || '').trim();
+          const name = String(s.name || '').trim();
+          const staffNames = String(s.staff_names || '').trim();
+          const label = code && name ? `${code} - ${name}` : (code || name || 'Subject');
+          const displayLabel = staffNames ? `${label} · Staff: ${staffNames}` : label;
+          return `<option value="${escapeHtml(subjectId)}">${escapeHtml(displayLabel)}</option>`;
+        })
         .join('');
       subjectSelect.innerHTML = `<option value="" selected>Select subject</option>${options}`;
     } catch (err) {
@@ -879,6 +944,10 @@ function initStudentPptPanel() {
 
   async function refreshPptList() {
     const subjectId = Number(String(subjectSelect.value || '').trim());
+    if (subjectSelect.value && !allowedSubjectIds.has(String(subjectSelect.value))) {
+      list.innerHTML = '<div class="empty-state"><p>Selected subject is not assigned.</p></div>';
+      return;
+    }
     if (!Number.isFinite(subjectId) || subjectId <= 0) {
       list.innerHTML = '<div class="empty-state"><p>Select a subject to view only that subject PPT uploads.</p></div>';
       return;
@@ -917,6 +986,12 @@ function initStudentPptPanel() {
     const subjectId = Number(String(subjectSelect.value || '').trim());
     const file = fileInput.files?.[0];
     const title = String(titleInput.value || '').trim();
+
+    if (subjectSelect.value && !allowedSubjectIds.has(String(subjectSelect.value))) {
+      msg.style.color = '#ffb8c7';
+      msg.textContent = 'Selected subject is not assigned for PPT upload.';
+      return;
+    }
 
     if (!Number.isFinite(subjectId) || subjectId <= 0 || !file) {
       msg.style.color = '#ffb8c7';
@@ -969,6 +1044,7 @@ function initStudentPptPanel() {
   subjectSelect.addEventListener('change', refreshPptList);
 
   panel.querySelector('#studentPptRefreshBtn').addEventListener('click', async () => {
+    await loadSubjects();
     await refreshPptList();
     showToast('PPT list refreshed', 'info');
   });

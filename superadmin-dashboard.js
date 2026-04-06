@@ -505,8 +505,9 @@
                         <div class="col">
                             <select id="assignSectionFilter" class="input-select" style="width:100%;height:100%;background:var(--panel-strong);border:1px solid var(--line);border-radius:12px;color:var(--text);padding:0 12px;">
                                 <option value="" selected disabled>Select Section (A3/A7)</option>
-                                <option value="A3">A3</option>
-                                <option value="A7">A7</option>
+                                <option value="all">◆ All Sections</option>
+                                <option value="A3">🔹 A3</option>
+                                <option value="A7">🔹 A7</option>
                             </select>
                         </div>
                         </div>
@@ -534,6 +535,7 @@
                     <div style="display:flex;gap:10px;flex-wrap:wrap;">
                         <button class="btn" type="button" id="assignSubjectToStaffBtn" style="flex:1;min-width:220px;">Assign Subject to Teacher</button>
                         <button class="btn" type="button" id="assignSubjectToStudentsBtn" style="flex:1;min-width:260px;">Assign Subject to Selected Students</button>
+                        <button class="btn" type="button" id="unassignSubjectFromStudentsBtn" style="flex:1;min-width:280px;border-color:#ffb8c7;color:#ffb8c7;">Unassign Subject from Selected Students</button>
                     </div>
                 </div>
                 <form id="assignForm" style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;">
@@ -671,8 +673,8 @@
             const dVal = deptFilter.value;
             const sVal = String(sectionFilter.value || '').trim().toUpperCase();
 
-            if (!['A3', 'A7'].includes(sVal)) {
-                studentList.innerHTML = '<div style="padding:16px;text-align:center;color:var(--muted);">Select Section A3 or A7 to view students</div>';
+            if (!['ALL', 'A3', 'A7'].includes(sVal)) {
+                studentList.innerHTML = '<div style="padding:16px;text-align:center;color:var(--muted);">Select Section A3, A7, or All Sections to view students</div>';
                 return;
             }
 
@@ -680,7 +682,7 @@
                 const { dept, sec } = extractMetadata(s);
                 const mQuery = !q || String(s.reg_no || '').toLowerCase().includes(q) || String(s.full_name || '').toLowerCase().includes(q);
                 const mDept = dVal === 'all' || dVal === dept;
-                const mSec = sVal === sec;
+                const mSec = sVal === 'ALL' || sVal === sec;
 
                 return mQuery && mDept && mSec;
             });
@@ -832,8 +834,8 @@
             const subjectId = Number(subjectSel.value || 0);
             const requiredSection = String(sectionFilter.value || '').trim().toUpperCase();
 
-            if (!['A3', 'A7'].includes(requiredSection)) {
-                setMsg('Section is compulsory. Please select A3 or A7.', true);
+            if (!['ALL', 'A3', 'A7'].includes(requiredSection)) {
+                setMsg('Section is compulsory. Please select A3, A7, or All Sections.', true);
                 return;
             }
 
@@ -864,8 +866,8 @@
             const staffEmail = String(staffSel.value || '').trim();
             const subjectId = Number(subjectSel.value || 0);
 
-            if (!['A3', 'A7'].includes(sVal)) {
-                setMsg('Section is compulsory. Please select A3 or A7.', true);
+            if (!['ALL', 'A3', 'A7'].includes(sVal)) {
+                setMsg('Section is compulsory. Please select A3, A7, or All Sections.', true);
                 return;
             }
 
@@ -878,7 +880,7 @@
                 const { dept, sec } = extractMetadata(s);
                 const mQuery = !q || String(s.reg_no || '').toLowerCase().includes(q) || String(s.full_name || '').toLowerCase().includes(q);
                 const mDept = dVal === 'all' || dVal === dept;
-                const mSec = sVal === sec;
+                const mSec = sVal === 'ALL' || sVal === sec;
                 return mQuery && mDept && mSec;
             }).map((s) => s.reg_no);
 
@@ -929,9 +931,14 @@
 
         mount.querySelector('#assignSubjectToStudentsBtn').addEventListener('click', async () => {
             const selectedRegNos = getSelectedStudentRegNos();
+            const staffEmail = String(staffSel.value || '').trim();
             const subjectId = Number(subjectSel.value || 0);
             if (!selectedRegNos.length || !subjectId) {
                 setMsg('Select students and subject first', true);
+                return;
+            }
+            if (!staffEmail) {
+                setMsg('Select staff before assigning subject to students', true);
                 return;
             }
 
@@ -940,13 +947,40 @@
                 const result = await apiJson('/api/admin/assign/bulk', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ regNos: selectedRegNos, subjectId, mode: 'assign-subject' }),
+                    body: JSON.stringify({ regNos: selectedRegNos, staffEmail, subjectId, mode: 'assign-subject' }),
                 });
-                setMsg(`Successfully assigned subject to ${result.count} students`);
-                toast(`Subject assigned: ${result.count}`);
+                setMsg(`Successfully assigned subject and staff to ${result.count} students`);
+                toast(`Subject + staff assigned: ${result.count}`);
                 await refreshMatrix();
             } catch (err) {
                 setMsg(err.message || 'Failed to assign subject to students', true);
+            }
+        });
+
+        mount.querySelector('#unassignSubjectFromStudentsBtn').addEventListener('click', async () => {
+            const selectedRegNos = getSelectedStudentRegNos();
+            const subjectId = Number(subjectSel.value || 0);
+            if (!selectedRegNos.length || !subjectId) {
+                setMsg('Select students and subject first', true);
+                return;
+            }
+
+            if (!confirm(`Unassign this subject from ${selectedRegNos.length} selected student(s)?`)) {
+                return;
+            }
+
+            try {
+                setMsg('Unassigning subject from students...', false);
+                const result = await apiJson('/api/admin/assign/bulk', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ regNos: selectedRegNos, subjectId, mode: 'unassign-subject' }),
+                });
+                setMsg(`Successfully unassigned subject from ${result.count} students`);
+                toast(`Subject unassigned: ${result.count}`);
+                await refreshMatrix();
+            } catch (err) {
+                setMsg(err.message || 'Failed to unassign subject from students', true);
             }
         });
 
